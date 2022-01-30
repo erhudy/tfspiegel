@@ -1,0 +1,19 @@
+{
+  "providers": [
+    {
+      "reference": "aws",
+      "versionRange": ">=3.70.0",
+      "os_archs": [
+        {
+          "os": "linux",
+          "arch": "amd64"
+        },
+        {
+          "os": "darwin",
+          "arch": "arm64"
+        }
+      ]
+    }
+  ],
+  "download_to": "/Users/erhudy/Desktop/providers"
+}

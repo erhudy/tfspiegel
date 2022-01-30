@@ -141,9 +141,47 @@ func MirrorProviderInstanceToDest(pi ProviderInstance, destination DownloadDesti
 
 	var mirrorProvider MirrorProvider
 	mirrorProvider.Archives = make(map[string]MirrorProviderPlatformArch)
+
 	workingDir := pi.DownloadDir(destination)
+	mirrorProviderJSONPath := filepath.Join(workingDir, fmt.Sprintf("%s.json", pi.Version))
 
 	for _, osArch := range pi.Platforms {
+		var mptemp MirrorProvider
+		var mppa MirrorProviderPlatformArch
+		alreadyPresent := false
+		// before downloading anything check to see if the provider exists locally and the checksum matches
+		mpjp, err := os.ReadFile(mirrorProviderJSONPath)
+		// if there's an error in here anywhere just ignore it and skip ahead to downloading
+		if err == nil {
+			err = json.Unmarshal(mpjp, &mptemp)
+			if err == nil {
+				mppa, ok := mptemp.Archives[osArch.String()]
+				if ok {
+					binaryPath := filepath.Join(workingDir, mppa.URL)
+					hash, err := dirhash.HashZip(binaryPath, dirhash.DefaultHash)
+					if err == nil {
+						foundHash := false
+						for _, mppaHash := range mppa.Hashes {
+							if mppaHash == hash {
+								foundHash = true
+							}
+						}
+						if foundHash {
+							// rewrite the data back into the map so that we write the whole thing out again
+							mirrorProvider.Archives[osArch.String()] = mppa
+							sugar.Infof("Provider %s (%s) already present, skipping download", pi.String(), osArch.String())
+							alreadyPresent = true
+							continue
+						}
+					}
+				}
+			}
+		}
+
+		if !alreadyPresent {
+			sugar.Warnf("Provder %s (%s) present but checksum did not match, redownloading", pi.String(), osArch.String())
+		}
+
 		downloadResponseUrl := fmt.Sprintf("https://%s/v1/providers/%s/%s/%s/download/%s/%s", pi.Hostname, pi.Owner, pi.Name, pi.Version, osArch.OS, osArch.Arch)
 
 		req, err := http.NewRequest(http.MethodGet, downloadResponseUrl, nil)
@@ -206,14 +244,13 @@ func MirrorProviderInstanceToDest(pi ProviderInstance, destination DownloadDesti
 		if err != nil {
 			return err
 		}
-		mppa := MirrorProviderPlatformArch{
+		mppa = MirrorProviderPlatformArch{
 			Hashes: []string{hash},
 			URL:    registryDownloadResponse.Filename,
 		}
 		mirrorProvider.Archives[osArch.String()] = mppa
 	}
 
-	mirrorProviderJSONPath := filepath.Join(workingDir, fmt.Sprintf("%s.json", pi.Version))
 	mirrorProviderMarshalled, err := json.Marshal(&mirrorProvider)
 	if err != nil {
 		return err

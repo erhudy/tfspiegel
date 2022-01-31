@@ -25,13 +25,17 @@ var httpClient http.Client
 var sugar *zap.SugaredLogger
 
 func (pi ProviderInstance) String() string {
+	return fmt.Sprintf("%s/%s/%s: %s", pi.Hostname, pi.Owner, pi.Name, pi.Version)
+}
+
+func (pi ProviderInstance) GetOsArchs() string {
 	var osArchs []string
 
 	for _, osArch := range pi.Platforms {
 		osArchs = append(osArchs, fmt.Sprintf("%s_%s", osArch.OS, osArch.Arch))
 	}
 
-	return fmt.Sprintf("%s/%s/%s: %s (%s)", pi.Hostname, pi.Owner, pi.Name, pi.Version, strings.Join(osArchs, ","))
+	return strings.Join(osArchs, ",")
 }
 
 func (pi ProviderInstance) DownloadDir(destination DownloadDestination) string {
@@ -137,7 +141,7 @@ func FilterProvidersByConstraints(provider Provider, providerMetadata ProviderMe
 }
 
 func MirrorProviderInstanceToDest(pi ProviderInstance, destination DownloadDestination) error {
-	sugar.Infof("Downloading provider %s", pi)
+	sugar.Infof("Working on provider %s (%s)", pi, pi.GetOsArchs())
 
 	var mirrorProvider MirrorProvider
 	mirrorProvider.Archives = make(map[string]MirrorProviderPlatformArch)
@@ -148,38 +152,54 @@ func MirrorProviderInstanceToDest(pi ProviderInstance, destination DownloadDesti
 	for _, osArch := range pi.Platforms {
 		var mptemp MirrorProvider
 		var mppa MirrorProviderPlatformArch
+		var hash string
+		var binaryPath string
+		var ok bool
 		alreadyPresent := false
+		foundHash := false
 		// before downloading anything check to see if the provider exists locally and the checksum matches
 		mpjp, err := os.ReadFile(mirrorProviderJSONPath)
-		// if there's an error in here anywhere just ignore it and skip ahead to downloading
-		if err == nil {
-			err = json.Unmarshal(mpjp, &mptemp)
-			if err == nil {
-				mppa, ok := mptemp.Archives[osArch.String()]
-				if ok {
-					binaryPath := filepath.Join(workingDir, mppa.URL)
-					hash, err := dirhash.HashZip(binaryPath, dirhash.DefaultHash)
-					if err == nil {
-						foundHash := false
-						for _, mppaHash := range mppa.Hashes {
-							if mppaHash == hash {
-								foundHash = true
-							}
-						}
-						if foundHash {
-							// rewrite the data back into the map so that we write the whole thing out again
-							mirrorProvider.Archives[osArch.String()] = mppa
-							sugar.Infof("Provider %s (%s) already present, skipping download", pi.String(), osArch.String())
-							alreadyPresent = true
-							continue
-						}
-					}
-				}
+		// if there's an error anywhere in this section just ignore it and skip ahead to downloading
+		if err != nil {
+			goto download
+		}
+
+		err = json.Unmarshal(mpjp, &mptemp)
+		if err != nil {
+			goto download
+		}
+
+		mppa, ok = mptemp.Archives[osArch.String()]
+		if !ok {
+			goto download
+		}
+
+		binaryPath = filepath.Join(workingDir, mppa.URL)
+		hash, err = dirhash.HashZip(binaryPath, dirhash.DefaultHash)
+		if err != nil {
+			goto download
+		}
+		alreadyPresent = true
+
+		for _, mppaHash := range mppa.Hashes {
+			if mppaHash == hash {
+				foundHash = true
 			}
 		}
 
+		if foundHash {
+			// rewrite the data back into the map so that we write the whole thing out again
+			mirrorProvider.Archives[osArch.String()] = mppa
+			sugar.Infof("Provider %s (%s) already present with matching checksum, skipping download", pi.String(), osArch.String())
+			continue
+		}
+
+		// this is labelled so that we can skip straight to it from any problems in the check section above
+	download:
 		if !alreadyPresent {
-			sugar.Warnf("Provder %s (%s) present but checksum did not match, redownloading", pi.String(), osArch.String())
+			sugar.Infof("Downloading provider %s (%s)", pi.String(), osArch.String())
+		} else if alreadyPresent && !foundHash {
+			sugar.Warnf("Provider %s (%s) present but checksum did not match, redownloading", pi.String(), osArch.String())
 		}
 
 		downloadResponseUrl := fmt.Sprintf("https://%s/v1/providers/%s/%s/%s/download/%s/%s", pi.Hostname, pi.Owner, pi.Name, pi.Version, osArch.OS, osArch.Arch)
@@ -240,7 +260,7 @@ func MirrorProviderInstanceToDest(pi ProviderInstance, destination DownloadDesti
 			return err
 		}
 
-		hash, err := dirhash.HashZip(destPath, dirhash.DefaultHash)
+		hash, err = dirhash.HashZip(destPath, dirhash.DefaultHash)
 		if err != nil {
 			return err
 		}

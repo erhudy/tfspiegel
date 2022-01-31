@@ -24,8 +24,12 @@ const (
 var httpClient http.Client
 var sugar *zap.SugaredLogger
 
+func (p Provider) String() string {
+	return fmt.Sprintf("%s/%s/%s", p.Hostname, p.Owner, p.Name)
+}
+
 func (pi ProviderInstance) String() string {
-	return fmt.Sprintf("%s/%s/%s: %s", pi.Hostname, pi.Owner, pi.Name, pi.Version)
+	return fmt.Sprintf("%s/%s/%s %s", pi.Hostname, pi.Owner, pi.Name, pi.Version)
 }
 
 func (pi ProviderInstance) GetOsArchs() string {
@@ -121,7 +125,7 @@ func FilterProvidersByConstraints(provider Provider, providerMetadata ProviderMe
 				}
 			}
 			if !foundOSArch {
-				sugar.Errorf("Requested OS/arch combination not found: %s", requestedOSArch.String())
+				sugar.Errorf("Requested OS/arch combination for %s %s not found: %s", provider, version, requestedOSArch.String())
 			}
 		}
 

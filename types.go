@@ -69,7 +69,7 @@ type ProviderInstance struct {
 // type used for the config
 type ConfigProvider struct {
 	Reference    string             `json:"reference"`
-	VersionRange string             `json:"versionRange"`
+	VersionRange string             `json:"version_range"`
 	OSArchs      []ProviderPlatform `json:"os_archs"`
 }
 

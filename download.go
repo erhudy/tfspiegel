@@ -7,13 +7,10 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
-	semver "github.com/blang/semver/v4"
 	"go.uber.org/zap"
-	"golang.org/x/mod/sumdb/dirhash"
 )
 
 const (
@@ -42,8 +39,8 @@ func (pi ProviderInstance) GetOsArchs() string {
 	return strings.Join(osArchs, ",")
 }
 
-func (pi ProviderInstance) DownloadDir(destination DownloadDestination) string {
-	return filepath.Join(string(destination), pi.Hostname, pi.Owner, pi.Name)
+func (pi ProviderInstance) GetDownloadPath() string {
+	return filepath.Join(pi.Hostname, pi.Owner, pi.Name)
 }
 
 func (pp ProviderPlatform) String() string {
@@ -74,137 +71,17 @@ func NewProvider(providerURL string) (Provider, error) {
 	return provider, nil
 }
 
-func GetProviderMetadata(provider Provider) (ProviderMetadata, error) {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://%s/v1/providers/%s/%s/versions", provider.Hostname, provider.Owner, provider.Name), nil)
-	if err != nil {
-		panic(err)
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		panic(err)
-	}
-	var providerMetadata ProviderMetadata
-
-	responseJson, err := io.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
-	}
-	err = json.Unmarshal(responseJson, &providerMetadata)
-	if err != nil {
-		panic(err)
-	}
-
-	return providerMetadata, nil
-}
-
-func FilterProvidersByConstraints(provider Provider, providerMetadata ProviderMetadata, versionRange string, osArchs []ProviderPlatform) ([]ProviderInstance, error) {
-	var filteredProviders []ProviderInstance
-
-	parsedRange, err := semver.ParseRange(versionRange)
-	if err != nil {
-		return filteredProviders, err
-	}
-
-	for _, upstreamProvider := range providerMetadata.Versions {
-		version, err := semver.Parse(upstreamProvider.Version)
-		if err != nil {
-			sugar.Errorf("error parsing %s as semver", version)
-			continue
-		}
-		if !parsedRange(version) {
-			continue
-		}
-		var validArchs []ProviderPlatform
-
-		for _, requestedOSArch := range osArchs {
-			foundOSArch := false
-			for _, upstreamOSArch := range upstreamProvider.Platforms {
-				if upstreamOSArch.Arch == requestedOSArch.Arch && upstreamOSArch.OS == requestedOSArch.OS {
-					validArchs = append(validArchs, requestedOSArch)
-					foundOSArch = true
-				}
-			}
-			if !foundOSArch {
-				sugar.Errorf("Requested OS/arch combination for %s %s not found: %s", provider, version, requestedOSArch.String())
-			}
-		}
-
-		providerInstance := ProviderInstance{
-			Provider: Provider{
-				Hostname: provider.Hostname,
-				Owner:    provider.Owner,
-				Name:     provider.Name,
-			},
-			Version:   version.String(),
-			Platforms: validArchs,
-		}
-		filteredProviders = append(filteredProviders, providerInstance)
-	}
-
-	return filteredProviders, nil
-}
-
-func MirrorProviderInstanceToDest(pi ProviderInstance, destination DownloadDestination) error {
+func (d *ProviderDownloader) mirrorProviderInstanceToDest(pi ProviderInstance, destination DownloadDestination) error {
 	sugar.Infof("Working on provider %s (%s)", pi, pi.GetOsArchs())
 
 	var mirrorProvider MirrorProvider
 	mirrorProvider.Archives = make(map[string]MirrorProviderPlatformArch)
 
-	workingDir := pi.DownloadDir(destination)
-	mirrorProviderJSONPath := filepath.Join(workingDir, fmt.Sprintf("%s.json", pi.Version))
-
 	for _, osArch := range pi.Platforms {
-		var mptemp MirrorProvider
-		var mppa MirrorProviderPlatformArch
-		var hash string
-		var binaryPath string
-		var ok bool
-		alreadyPresent := false
-		foundHash := false
-		// before downloading anything check to see if the provider exists locally and the checksum matches
-		mpjp, err := os.ReadFile(mirrorProviderJSONPath)
-		// if there's an error anywhere in this section just ignore it and skip ahead to downloading
-		if err != nil {
-			goto download
-		}
-
-		err = json.Unmarshal(mpjp, &mptemp)
-		if err != nil {
-			goto download
-		}
-
-		mppa, ok = mptemp.Archives[osArch.String()]
-		if !ok {
-			goto download
-		}
-
-		binaryPath = filepath.Join(workingDir, mppa.URL)
-		hash, err = dirhash.HashZip(binaryPath, dirhash.DefaultHash)
-		if err != nil {
-			goto download
-		}
-		alreadyPresent = true
-
-		for _, mppaHash := range mppa.Hashes {
-			if mppaHash == hash {
-				foundHash = true
-			}
-		}
-
-		if foundHash {
-			// rewrite the data back into the map so that we write the whole thing out again
-			mirrorProvider.Archives[osArch.String()] = mppa
-			sugar.Infof("Provider %s (%s) already present with matching checksum, skipping download", pi.String(), osArch.String())
+		if !d.storage.NeedToDownloadProviderInstance(pi, osArch) {
 			continue
 		}
-
-		// this is labelled so that we can skip straight to it from any problems in the check section above
-	download:
-		if !alreadyPresent {
-			sugar.Infof("Downloading provider %s (%s)", pi.String(), osArch.String())
-		} else if alreadyPresent && !foundHash {
-			sugar.Warnf("Provider %s (%s) present but checksum did not match, redownloading", pi.String(), osArch.String())
-		}
+		sugar.Infof("Downloading provider %s (%s)", pi.String(), osArch.String())
 
 		downloadResponseUrl := fmt.Sprintf("https://%s/v1/providers/%s/%s/%s/download/%s/%s", pi.Hostname, pi.Owner, pi.Name, pi.Version, osArch.OS, osArch.Arch)
 
@@ -253,82 +130,17 @@ func MirrorProviderInstanceToDest(pi ProviderInstance, destination DownloadDesti
 			return fmt.Errorf("got SHA %x, expected %s", checksum, registryDownloadResponse.Shasum)
 		}
 
-		destPath := filepath.Join(workingDir, registryDownloadResponse.Filename)
-		err = os.MkdirAll(workingDir, os.FileMode(0755))
+		mppa, err := d.storage.WriteProvider(pi, registryDownloadResponse, providerBinary)
 		if err != nil {
 			return err
 		}
 
-		err = ioutil.WriteFile(destPath, providerBinary, os.FileMode(0644))
-		if err != nil {
-			return err
-		}
-
-		hash, err = dirhash.HashZip(destPath, dirhash.DefaultHash)
-		if err != nil {
-			return err
-		}
-		mppa = MirrorProviderPlatformArch{
-			Hashes: []string{hash},
-			URL:    registryDownloadResponse.Filename,
-		}
 		mirrorProvider.Archives[osArch.String()] = mppa
 	}
 
-	mirrorProviderMarshalled, err := json.Marshal(&mirrorProvider)
+	err := d.storage.WriteProviderMetadataFile(pi, mirrorProvider)
 	if err != nil {
 		return err
-	}
-	err = ioutil.WriteFile(mirrorProviderJSONPath, mirrorProviderMarshalled, os.FileMode(0644))
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func MirrorProvidersWithConfig(config Config) error {
-	logger, _ := zap.NewProduction()
-	defer logger.Sync()
-	sugar = logger.Sugar()
-
-	var mirrorIndex MirrorIndex
-	mirrorIndex.Versions = make(map[string]map[string]interface{})
-
-	for _, configProvider := range config.Providers {
-		provider, err := NewProvider(configProvider.Reference)
-		if err != nil {
-			return err
-		}
-		providerMetadata, err := GetProviderMetadata(provider)
-		if err != nil {
-			return err
-		}
-
-		filteredProviders, err := FilterProvidersByConstraints(provider, providerMetadata, configProvider.VersionRange, configProvider.OSArchs)
-		if err != nil {
-			return err
-		}
-
-		for _, filteredProvider := range filteredProviders {
-			err = MirrorProviderInstanceToDest(filteredProvider, config.DownloadTo)
-			if err != nil {
-				sugar.Errorf("error mirroring provider: %s", err)
-			}
-			mirrorIndex.Versions[filteredProvider.Version] = make(map[string]interface{})
-		}
-
-		if len(filteredProviders) > 0 {
-			indexJSONPath := filepath.Join(filteredProviders[0].DownloadDir(config.DownloadTo), "index.json")
-			indexMarshalled, err := json.Marshal(&mirrorIndex)
-			if err != nil {
-				return err
-			}
-			err = ioutil.WriteFile(indexJSONPath, indexMarshalled, os.FileMode(0644))
-			if err != nil {
-				return err
-			}
-		}
 	}
 
 	return nil

@@ -34,9 +34,14 @@ type ProviderVersion struct {
 }
 
 type ProviderMetadata struct {
+	Provider
 	ID       string            `json:"id"`
 	Versions []ProviderVersion `json:"versions"`
 	Warnings *[]string         `json:"warnings"`
+}
+
+type ProviderDownloader struct {
+	Storage ProviderStorer
 }
 
 // types used when writing out the JSON for the provider mirror protocol
@@ -66,6 +71,12 @@ type ProviderInstance struct {
 	Platforms []ProviderPlatform
 }
 
+type ProviderBinary struct {
+	ProviderInstance
+	Checksum string
+	Path     string
+}
+
 // type used for the config
 type ConfigProvider struct {
 	Reference    string             `json:"reference"`
@@ -73,9 +84,28 @@ type ConfigProvider struct {
 	OSArchs      []ProviderPlatform `json:"os_archs"`
 }
 
-type DownloadDestination string
+type configRaw struct {
+	Providers  []ConfigProvider `json:"providers"`
+	DownloadTo string           `json:"download_to"`
+}
 
 type Config struct {
-	Providers  []ConfigProvider    `json:"providers"`
-	DownloadTo DownloadDestination `json:"download_to"`
+	Providers  []ConfigProvider
+	DownloadTo DownloadDestination
+}
+
+type ProviderStorageType int
+
+const (
+	DOWNLOAD_DESTINATION_FS ProviderStorageType = iota
+	DOWNLOAD_DESTINATION_S3
+)
+
+type DownloadDestination struct {
+	Type     ProviderStorageType
+	Location string
+}
+
+type ProviderStorer interface {
+	FilterAvailableProviderInstancesToDownload([]ProviderInstance) ([]ProviderInstance, error)
 }

@@ -2,7 +2,21 @@
   "providers": [
     {
       "reference": "aws",
-      "version_range": ">=3.70.0",
+      "version_range": ">=4.15.0",
+      "os_archs": [
+        {
+          "os": "linux",
+          "arch": "amd64"
+        },
+        {
+          "os": "darwin",
+          "arch": "arm64"
+        }
+      ]
+    },
+    {
+      "reference": "null",
+      "version_range": ">=3.1.1",
       "os_archs": [
         {
           "os": "linux",
@@ -16,7 +30,7 @@
     },
     {
       "reference": "random",
-      "version_range": ">=3.0.0",
+      "version_range": ">=3.1.0",
       "os_archs": [
         {
           "os": "linux",
@@ -29,5 +43,6 @@
       ]
     } 
   ],
-  "download_to": "/Users/erhudy/Desktop/providers"
+  "download_root": "/Users/erhudy/Desktop/providers",
+  "storage_type": "fs"
 }

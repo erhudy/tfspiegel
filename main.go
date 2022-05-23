@@ -120,6 +120,7 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 		sugar.Debugf("%s\n", marshalled)
 
 		var psibs []ProviderSpecificInstanceBinary
+		psibs = append(psibs, valid...)
 
 		for _, pvi := range pvisToDownload {
 			psib, err := d.MirrorProviderInstanceToDest(pvi)

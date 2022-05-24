@@ -11,6 +11,7 @@ import (
 
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	awss3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/xorcare/pointer"
 	"golang.org/x/mod/sumdb/dirhash"
 )
 
@@ -293,9 +294,10 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 
 	mirrorIndexReader := bytes.NewReader(mirrorIndexJson)
 	_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{
-		Body:   mirrorIndexReader,
-		Bucket: &s.bucket,
-		Key:    &mirrorIndexJsonPath,
+		Body:        mirrorIndexReader,
+		Bucket:      &s.bucket,
+		Key:         &mirrorIndexJsonPath,
+		ContentType: pointer.String("application/json"),
 	})
 
 	if err != nil {
@@ -311,9 +313,10 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 
 	etagReader := bytes.NewReader(etagMapJson)
 	_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{
-		Body:   etagReader,
-		Bucket: &s.bucket,
-		Key:    &etagMapJsonPath,
+		Body:        etagReader,
+		Bucket:      &s.bucket,
+		Key:         &etagMapJsonPath,
+		ContentType: pointer.String("application/json"),
 	})
 	if err != nil {
 		return fmt.Errorf("error writing etag map JSON: %w", err)

@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"go.uber.org/zap"
 )
@@ -47,9 +52,10 @@ func LoadConfig() (config Configuration, err error) {
 
 	config = Configuration{
 		Providers: configRaw.Providers,
-		DownloadRoot: DownloadDestination{
+		DownloadDestination: DownloadDestination{
 			Type:     storageType,
-			Location: configRaw.DownloadRoot,
+			FSConfig: configRaw.FSConfig,
+			S3Config: configRaw.S3Config,
 		},
 	}
 
@@ -82,13 +88,52 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 		}
 
 		var pvisToDownload []ProviderSpecificInstance
-		d := ProviderDownloader{
-			Storage: NewFSProviderStorer(ProviderStorageConfiguration{
-				downloadRoot:            config.DownloadRoot.Location,
-				provider:                provider,
-				sugar:                   sugar,
-				wantedProviderInstances: wantedProviderVersionedInstances,
-			}),
+		var d ProviderDownloader
+
+		if config.DownloadDestination.Type == STORAGE_TYPE_FS {
+			d = ProviderDownloader{
+				Storage: FSProviderStorageConfiguration{
+					downloadRoot:            config.DownloadDestination.FSConfig.DownloadRoot,
+					provider:                provider,
+					sugar:                   sugar,
+					wantedProviderInstances: wantedProviderVersionedInstances,
+				},
+			}
+		} else if config.DownloadDestination.Type == STORAGE_TYPE_S3 {
+			ctx := context.Background()
+			awscfg, err := awsconfig.LoadDefaultConfig(ctx)
+			if err != nil {
+				return err
+			}
+			if config.DownloadDestination.S3Config.Endpoint != "" {
+				const defaultRegion = "us-east-1"
+				staticResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+					return aws.Endpoint{
+						PartitionID:       "aws",
+						URL:               config.DownloadDestination.S3Config.Endpoint,
+						SigningRegion:     defaultRegion,
+						HostnameImmutable: true,
+					}, nil
+				})
+
+				awscfg.Region = defaultRegion
+				awscfg.EndpointResolverWithOptions = staticResolver
+			}
+			prefix := config.DownloadDestination.S3Config.Prefix
+
+			s3client := awss3.NewFromConfig(awscfg)
+
+			d = ProviderDownloader{
+				Storage: S3ProviderStorageConfiguration{
+					bucket:                  config.DownloadDestination.S3Config.Bucket,
+					context:                 ctx,
+					prefix:                  prefix,
+					provider:                provider,
+					s3client:                *s3client,
+					sugar:                   sugar,
+					wantedProviderInstances: wantedProviderVersionedInstances,
+				},
+			}
 		}
 		catalogContents, err := d.Storage.LoadCatalog()
 		var valid []ProviderSpecificInstanceBinary

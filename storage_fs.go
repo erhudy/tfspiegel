@@ -10,14 +10,8 @@ import (
 	"golang.org/x/mod/sumdb/dirhash"
 )
 
-type fsProviderStorage ProviderStorageConfiguration
-
-func NewFSProviderStorer(psc ProviderStorageConfiguration) ProviderStorer {
-	return fsProviderStorage(psc)
-}
-
 // for filesystem mirroring we use the Terraform mirror index and the individual JSON files as the catalog
-func (s fsProviderStorage) LoadCatalog() ([]ProviderSpecificInstanceBinary, error) {
+func (s FSProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanceBinary, error) {
 	indexFullPath := filepath.Join(s.downloadRoot, s.provider.String(), MIRROR_INDEX_FILE)
 	indexContents, err := os.ReadFile(indexFullPath)
 	if err != nil {
@@ -76,7 +70,13 @@ func (s fsProviderStorage) LoadCatalog() ([]ProviderSpecificInstanceBinary, erro
 	return psibs, nil
 }
 
-func (s fsProviderStorage) VerifyCatalogAgainstStorage(catalog []ProviderSpecificInstanceBinary) (validLocalBinaries []ProviderSpecificInstanceBinary, invalidLocalBinaries []ProviderSpecificInstanceBinary, err error) {
+func (s FSProviderStorageConfiguration) VerifyCatalogAgainstStorage(
+	catalog []ProviderSpecificInstanceBinary,
+) (
+	validLocalBinaries []ProviderSpecificInstanceBinary,
+	invalidLocalBinaries []ProviderSpecificInstanceBinary,
+	err error,
+) {
 	sugar.Debugf("verifying catalog data: %v", catalog)
 
 	for _, pib := range catalog {
@@ -101,31 +101,18 @@ func (s fsProviderStorage) VerifyCatalogAgainstStorage(catalog []ProviderSpecifi
 	return validLocalBinaries, invalidLocalBinaries, nil
 }
 
-func (s fsProviderStorage) ReconcileWantedProviderInstances(
+func (s FSProviderStorageConfiguration) ReconcileWantedProviderInstances(
 	validPSIBs []ProviderSpecificInstanceBinary,
 	invalidPSIBs []ProviderSpecificInstanceBinary,
 	wantedProviderInstances []ProviderSpecificInstance,
 ) (reconciledPIs []ProviderSpecificInstance) {
-	dedupe := make(map[ProviderSpecificInstance]string)
-
-	for _, x := range invalidPSIBs {
-		dedupe[x.ProviderSpecificInstance] = ""
-	}
-	for _, x := range wantedProviderInstances {
-		dedupe[x] = ""
-	}
-	for _, x := range validPSIBs {
-		delete(dedupe, x.ProviderSpecificInstance)
-	}
-
-	var retval []ProviderSpecificInstance
-	for k := range dedupe {
-		retval = append(retval, k)
-	}
-	return retval
+	return commonReconcileWantedProviderInstances(validPSIBs, invalidPSIBs, wantedProviderInstances)
 }
 
-func (s fsProviderStorage) WriteProviderBinaryDataToStorage(binaryData []byte, pi ProviderSpecificInstance) (psib *ProviderSpecificInstanceBinary, err error) {
+func (s FSProviderStorageConfiguration) WriteProviderBinaryDataToStorage(
+	binaryData []byte,
+	pi ProviderSpecificInstance,
+) (psib *ProviderSpecificInstanceBinary, err error) {
 	dirPath := filepath.Join(s.downloadRoot, pi.GetDownloadBase())
 	err = os.MkdirAll(dirPath, os.FileMode(0755))
 	if err != nil {
@@ -150,7 +137,7 @@ func (s fsProviderStorage) WriteProviderBinaryDataToStorage(binaryData []byte, p
 	}, nil
 }
 
-func (s fsProviderStorage) StoreCatalog(psibs []ProviderSpecificInstanceBinary) error {
+func (s FSProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificInstanceBinary) error {
 	versionMap := make(map[string][]ProviderSpecificInstanceBinary)
 	mirrorIndex := MirrorIndex{
 		Versions: make(map[string]map[string]any),

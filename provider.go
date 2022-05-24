@@ -11,12 +11,12 @@ import (
 	semver "github.com/blang/semver/v4"
 )
 
-func (p Provider) String() string {
-	return fmt.Sprintf("%s/%s/%s", p.Hostname, p.Owner, p.Name)
-}
-
 func (p Provider) GetDownloadBase() string {
 	return filepath.Join(p.Hostname, p.Owner, p.Name)
+}
+
+func (p Provider) String() string {
+	return p.GetDownloadBase()
 }
 
 func (pi ProviderSpecificInstance) String() string {

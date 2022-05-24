@@ -43,6 +43,9 @@
       ]
     } 
   ],
-  "download_root": "/Users/erhudy/Desktop/providers",
-  "storage_type": "fs"
+  "storage_type": "s3",
+  "s3_config": {
+    "bucket": "mybucket",
+    "endpoint": "https://127.0.0.1:9000"
+  }
 }

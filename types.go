@@ -1,23 +1,10 @@
 package main
 
-import "go.uber.org/zap"
-
 type RemoteProviderMetadata struct {
 	Provider
 	ID       string                `json:"id"`
 	Versions []HCTFProviderVersion `json:"versions"`
 	Warnings *[]string             `json:"warnings"`
-}
-
-type ProviderDownloader struct {
-	Storage ProviderStorer
-}
-
-type ProviderStorageConfiguration struct {
-	downloadRoot            string
-	provider                Provider
-	sugar                   *zap.SugaredLogger
-	wantedProviderInstances []ProviderSpecificInstance
 }
 
 // types used when downloading
@@ -36,8 +23,9 @@ type ProviderSpecificInstance struct {
 
 type ProviderSpecificInstanceBinary struct {
 	ProviderSpecificInstance
-	H1Checksum string
-	FullPath   string
+	H1Checksum       string
+	S3ObjectChecksum S3ObjectChecksum // only relevant for S3 - probably a better way to organize this but this is fast
+	FullPath         string
 }
 
 type ProviderStorageType int
@@ -49,7 +37,8 @@ const (
 
 type DownloadDestination struct {
 	Type     ProviderStorageType
-	Location string
+	FSConfig fsConfig
+	S3Config s3Config
 }
 
 type ProviderStorer interface {
@@ -58,11 +47,4 @@ type ProviderStorer interface {
 	ReconcileWantedProviderInstances(validPSIBs []ProviderSpecificInstanceBinary, invalidPSIBs []ProviderSpecificInstanceBinary, wantedProviderInstances []ProviderSpecificInstance) []ProviderSpecificInstance
 	WriteProviderBinaryDataToStorage(binaryData []byte, pi ProviderSpecificInstance) (psib *ProviderSpecificInstanceBinary, err error)
 	StoreCatalog([]ProviderSpecificInstanceBinary) error
-}
-
-// we can't checksum files directly in S3
-type S3ObjectEntry struct {
-	ETag           string
-	Key            string
-	SHA256Checksum string
 }

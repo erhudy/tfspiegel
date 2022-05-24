@@ -274,9 +274,10 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 
 		reader := bytes.NewReader(versionJson)
 		_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{
-			Body:   reader,
-			Bucket: &s.bucket,
-			Key:    &versionJsonPath,
+			Body:        reader,
+			Bucket:      &s.bucket,
+			ContentType: pointer.String("application/json"),
+			Key:         &versionJsonPath,
 		})
 
 		if err != nil {
@@ -296,8 +297,8 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 	_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{
 		Body:        mirrorIndexReader,
 		Bucket:      &s.bucket,
-		Key:         &mirrorIndexJsonPath,
 		ContentType: pointer.String("application/json"),
+		Key:         &mirrorIndexJsonPath,
 	})
 
 	if err != nil {
@@ -315,8 +316,8 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 	_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{
 		Body:        etagReader,
 		Bucket:      &s.bucket,
-		Key:         &etagMapJsonPath,
 		ContentType: pointer.String("application/json"),
+		Key:         &etagMapJsonPath,
 	})
 	if err != nil {
 		return fmt.Errorf("error writing etag map JSON: %w", err)

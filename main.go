@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -15,23 +17,54 @@ import (
 )
 
 func main() {
-	config, err := LoadConfig()
+	var configPath string
+	var loggerType string
+	var loop bool
+	var waitBetweenLoops time.Duration
+
+	flag.StringVar(&configPath, "config-path", "config.json", "Path to configuration file")
+	flag.StringVar(&loggerType, "logger-type", "development", "Logger type (development or production)")
+	flag.BoolVar(&loop, "loop", false, "Loop on mirroring providers after a wait period")
+	flag.DurationVar(&waitBetweenLoops, "wait-between-loops", 6*time.Hour, "How long to wait between mirroring attempts when looping")
+	flag.Parse()
+
+	if !StringInSlice(loggerType, []string{"development", "production"}) {
+		panic(fmt.Errorf("%s is not a valid logger type", loggerType))
+	}
+
+	config, err := LoadConfig(configPath)
 	if err != nil {
 		panic(err)
 	}
 
-	logger, _ := zap.NewDevelopment()
+	var logger *zap.Logger
+	if loggerType == "development" {
+		logger, _ = zap.NewDevelopment()
+	} else if loggerType == "production" {
+		logger, _ = zap.NewProduction()
+	}
 	defer logger.Sync()
 
-	err = MirrorProvidersWithConfig(config, logger)
-	if err != nil {
-		panic(err)
+	if loop {
+		for {
+			err = MirrorProvidersWithConfig(config, logger)
+			if err != nil {
+				panic(err)
+			}
+			logger.Info(fmt.Sprintf("sleeping %s until next loop", waitBetweenLoops))
+			time.Sleep(waitBetweenLoops)
+		}
+	} else {
+		err = MirrorProvidersWithConfig(config, logger)
+		if err != nil {
+			panic(err)
+		}
 	}
 }
 
-func LoadConfig() (config Configuration, err error) {
+func LoadConfig(configPath string) (config Configuration, err error) {
 	var configRaw configRaw
-	configData, err := ioutil.ReadFile("config.json")
+	configData, err := os.ReadFile(configPath)
 	if err != nil {
 		return config, err
 	}
@@ -162,7 +195,9 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 			sugar.Errorf("error marshalling provider instances to download for provider %s: %w", provider, err)
 			continue
 		}
-		sugar.Debugf("%s\n", marshalled)
+		if len(pvisToDownload) > 0 {
+			sugar.Debugf("%s\n", marshalled)
+		}
 
 		var psibs []ProviderSpecificInstanceBinary
 		psibs = append(psibs, valid...)

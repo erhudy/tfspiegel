@@ -43,7 +43,10 @@
       ]
     } 
   ],
-  "storage_type": "s3",
+  "storage_type": "fs",
+  "fs_config": {
+    "download_root": "/example/path"
+  },
   "s3_config": {
     "bucket": "mybucket",
     "endpoint": "https://127.0.0.1:9000"

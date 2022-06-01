@@ -5,143 +5,132 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
-	"path/filepath"
-	"strings"
+	"time"
 
 	"go.uber.org/zap"
-)
-
-const (
-	DEFAULT_PROVIDER_HOSTNAME = "registry.terraform.io"
-	DEFAULT_PROVIDER_OWNER    = "hashicorp"
 )
 
 var httpClient http.Client
 var sugar *zap.SugaredLogger
 
-func (p Provider) String() string {
-	return fmt.Sprintf("%s/%s/%s", p.Hostname, p.Owner, p.Name)
-}
-
-func (pi ProviderInstance) String() string {
-	return fmt.Sprintf("%s/%s/%s %s", pi.Hostname, pi.Owner, pi.Name, pi.Version)
-}
-
-func (pi ProviderInstance) GetOsArchs() string {
-	var osArchs []string
-
-	for _, osArch := range pi.Platforms {
-		osArchs = append(osArchs, fmt.Sprintf("%s_%s", osArch.OS, osArch.Arch))
-	}
-
-	return strings.Join(osArchs, ",")
-}
-
-func (pi ProviderInstance) GetDownloadPath() string {
-	return filepath.Join(pi.Hostname, pi.Owner, pi.Name)
-}
-
-func (pp ProviderPlatform) String() string {
+func (pp HCTFProviderPlatform) String() string {
 	return fmt.Sprintf("%s_%s", pp.OS, pp.Arch)
 }
 
-func NewProvider(providerURL string) (Provider, error) {
-	provider := Provider{
-		Hostname: DEFAULT_PROVIDER_HOSTNAME,
-		Owner:    DEFAULT_PROVIDER_OWNER,
-	}
+func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificInstance) (psib *ProviderSpecificInstanceBinary, err error) {
+	sugar.Infof("mirroring PVI %s", pi)
 
-	splitURL := strings.Split(providerURL, "/")
-	switch len(splitURL) {
-	case 0:
-		return provider, fmt.Errorf("split resulted in 0 len slice somehow")
-	case 1:
-		provider.Name = splitURL[0]
-	case 2:
-		provider.Owner = splitURL[0]
-		provider.Name = splitURL[1]
-	default:
-		provider.Hostname = splitURL[0]
-		provider.Owner = splitURL[1]
-		provider.Name = strings.Join(splitURL[2:(len(splitURL)-1)], "/")
-	}
+	downloadResponseUrl := fmt.Sprintf("https://%s/v1/providers/%s/%s/%s/download/%s/%s", pi.Hostname, pi.Owner, pi.Name, pi.Version, pi.OS, pi.Arch)
 
-	return provider, nil
-}
+	retries := 0
+	maxRetries := 5
+	completed := false
 
-func (d *ProviderDownloader) mirrorProviderInstanceToDest(pi ProviderInstance, destination DownloadDestination) error {
-	sugar.Infof("Working on provider %s (%s)", pi, pi.GetOsArchs())
+	var lastErr error
 
-	var mirrorProvider MirrorProvider
-	mirrorProvider.Archives = make(map[string]MirrorProviderPlatformArch)
-
-	for _, osArch := range pi.Platforms {
-		if !d.storage.NeedToDownloadProviderInstance(pi, osArch) {
-			continue
+	for {
+		if completed {
+			break
 		}
-		sugar.Infof("Downloading provider %s (%s)", pi.String(), osArch.String())
 
-		downloadResponseUrl := fmt.Sprintf("https://%s/v1/providers/%s/%s/%s/download/%s/%s", pi.Hostname, pi.Owner, pi.Name, pi.Version, osArch.OS, osArch.Arch)
+		sugar.Debugf("starting download for PVI %s", pi)
+		if retries > 0 {
+			sleepFor := retries * retries
+			sugar.Warnf("sleeping %d seconds", sleepFor)
+			time.Sleep(time.Duration(sleepFor))
+		}
+		if retries >= maxRetries {
+			sugar.Errorf("hit max retries of %d for PVI %s", retries, pi)
+			break
+		}
 
 		req, err := http.NewRequest(http.MethodGet, downloadResponseUrl, nil)
 		if err != nil {
-			return err
+			lastErr = err
+			sugar.Errorf("error making HTTP request for PVI %s: %w", pi, err)
+			retries += 1
+			break
 		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			return err
+			lastErr = err
+			sugar.Errorf("error getting HTTP response for PVI %s: %w", pi, err)
+			retries += 1
+			break
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return err
+			lastErr = err
+			sugar.Errorf("error reading HTTP response body for PVI %s: %w", pi, err)
+			retries += 1
+			break
 		}
 
-		var registryDownloadResponse RegistryDownloadResponse
+		var registryDownloadResponse HCTFRegistryDownloadResponse
 		err = json.Unmarshal(respBody, &registryDownloadResponse)
 		if err != nil {
-			return err
+			lastErr = err
+			sugar.Errorf("error unmarshalling response body for PVI %s: %w", pi, err)
+			retries += 1
+			break
 		}
 
 		downloadReq, err := http.NewRequest(http.MethodGet, registryDownloadResponse.DownloadURL, nil)
 		if err != nil {
-			return err
+			lastErr = err
+			sugar.Errorf("error making HTTP download request for PVI %s: %w", pi, err)
+			retries += 1
+			break
 		}
 		downloadResp, err := httpClient.Do(downloadReq)
 		if err != nil {
-			return err
+			lastErr = err
+			sugar.Errorf("error downloading binary for PVI %s: %w", pi, err)
+			retries += 1
+			break
 		}
 
 		hasher := sha256.New()
-		providerBinary, err := ioutil.ReadAll(downloadResp.Body)
+		providerBinary, err := io.ReadAll(downloadResp.Body)
 		if err != nil {
-			return err
+			lastErr = err
+			sugar.Errorf("error reading downloaded binary for PVI %s: %w", pi, err)
+			retries += 1
+			break
 		}
 
 		_, err = hasher.Write(providerBinary)
 		if err != nil {
-			return err
+			lastErr = err
+			sugar.Errorf("error checksumming provider for PVI %s: %w", pi, err)
+			retries += 1
+			break
 		}
 
 		checksum := fmt.Sprintf("%x", hasher.Sum(nil))
 		if checksum != registryDownloadResponse.Shasum {
-			return fmt.Errorf("got SHA %x, expected %s", checksum, registryDownloadResponse.Shasum)
+			lastErr = fmt.Errorf("got SHA %x, expected %s", checksum, registryDownloadResponse.Shasum)
+			sugar.Errorf("error making HTTP request for PVI %s: %w", pi, lastErr)
+			retries += 1
+			break
 		}
 
-		mppa, err := d.storage.WriteProvider(pi, registryDownloadResponse, providerBinary)
+		psib, err = d.Storage.WriteProviderBinaryDataToStorage(providerBinary, pi)
 		if err != nil {
-			return err
+			lastErr = err
+			sugar.Errorf("error writing binary data to storage for PVI %s: %w", pi, lastErr)
+			retries += 1
+			break
 		}
 
-		mirrorProvider.Archives[osArch.String()] = mppa
+		completed = true
 	}
 
-	err := d.storage.WriteProviderMetadataFile(pi, mirrorProvider)
-	if err != nil {
-		return err
+	if lastErr != nil && retries >= maxRetries {
+		return nil, lastErr
 	}
 
-	return nil
+	return psib, nil
 }

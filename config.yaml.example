@@ -1,6 +1,8 @@
 providers:
   - reference: aws
     version_range: '>=4.15.0'
+    # can mirror OS/archs other than the current one
+    # missing version/OS/arch combinations will be gracefully skipped
     os_archs:
       - os: linux
         arch: amd64
@@ -15,14 +17,15 @@ providers:
         arch: arm64
   - reference: random
     version_range: '>=3.1.0'
+    # os_archs is not required, if missing the current runtime OS/arch will be used
   - reference: gavinbunney/kubectl
     version_range: '>=1.14.0'
     os_archs:
       - os: linux
         arch: amd64
-storage_type: fs
+storage_type: fs  # or "s3"
 fs_config:
   download_root: /put/providers/here
 s3_config:
   bucket: mybucket
-  endpoint: https://127.0.0.1:9000
+  endpoint: https://127.0.0.1:9000  # only needed if using 

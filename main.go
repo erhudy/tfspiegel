@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -22,7 +24,7 @@ func main() {
 	var loop bool
 	var waitBetweenLoops time.Duration
 
-	flag.StringVar(&configPath, "config-path", "config.json", "Path to configuration file")
+	flag.StringVar(&configPath, "config-path", "config.yaml", "Path to configuration file")
 	flag.StringVar(&loggerType, "logger-type", "development", "Logger type (development or production)")
 	flag.BoolVar(&loop, "loop", false, "Loop on mirroring providers after a wait period")
 	flag.DurationVar(&waitBetweenLoops, "wait-between-loops", 6*time.Hour, "How long to wait between mirroring attempts when looping")
@@ -45,13 +47,15 @@ func main() {
 	}
 	defer logger.Sync()
 
+	sugar = logger.Sugar()
+
 	if loop {
 		for {
 			err = MirrorProvidersWithConfig(config, logger)
 			if err != nil {
 				panic(err)
 			}
-			logger.Info(fmt.Sprintf("sleeping %s until next loop", waitBetweenLoops))
+			sugar.Infof("sleeping %s until next loop", waitBetweenLoops)
 			time.Sleep(waitBetweenLoops)
 		}
 	} else {
@@ -68,7 +72,7 @@ func LoadConfig(configPath string) (config Configuration, err error) {
 	if err != nil {
 		return config, err
 	}
-	err = json.Unmarshal(configData, &configRaw)
+	err = yaml.Unmarshal(configData, &configRaw)
 	if err != nil {
 		return config, err
 	}
@@ -114,7 +118,13 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 			continue
 		}
 
-		wantedProviderVersionedInstances, err := provider.FilterToWantedPVIs(providerMetadata, configProvider.VersionRange, configProvider.OSArchs)
+		osarchs := configProvider.OSArchs
+		if len(osarchs) < 1 {
+			osarchs = []HCTFProviderPlatform{{runtime.GOOS, runtime.GOARCH}}
+			sugar.Warnf("provider %s does not have OS/archs set, using current platform (%s/%s) as defaults", provider, runtime.GOOS, runtime.GOARCH)
+		}
+
+		wantedProviderVersionedInstances, err := provider.FilterToWantedPVIs(providerMetadata, configProvider.VersionRange, osarchs)
 		if err != nil {
 			sugar.Errorf("error fetching wanted provider version instances for provider %s: %w", provider, err)
 			continue

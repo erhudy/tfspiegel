@@ -10,6 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.9.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.1.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.13.5 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 require (

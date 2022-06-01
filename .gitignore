@@ -1,3 +1,5 @@
 tfspiegel
 .vscode
 dev-env
+config.json
+config.yaml

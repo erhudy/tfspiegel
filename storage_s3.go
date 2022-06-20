@@ -1,34 +1,42 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
-	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
-	awss3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/xorcare/pointer"
 	"golang.org/x/mod/sumdb/dirhash"
 )
 
+func (s S3ProviderStorageConfiguration) ValidatePrerequisites() error {
+	_, err := s.s3client.ListPrefix(s.bucket, s.prefix)
+	if err != nil {
+		return err
+	}
+	filename := fmt.Sprintf(".testfile.%d", time.Now().Unix())
+	key := filepath.Join(s.prefix, filename)
+	_, err = s.s3client.PutObject(s.bucket, key, []byte{'b', 'l', 'a', 'h'})
+	if err != nil {
+		return err
+	}
+	err = s.s3client.DeleteObject(s.bucket, key)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (s S3ProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanceBinary, error) {
 	indexFullPath := filepath.Join(s.prefix, s.provider.String(), MIRROR_INDEX_FILE)
-	indexObjectOutput, err := s.s3client.GetObject(s.context, &awss3.GetObjectInput{
-		Bucket: &s.bucket,
-		Key:    &indexFullPath,
-	})
+	indexContents, err := s.s3client.GetObjectContents(s.bucket, indexFullPath)
 	if err != nil {
-		s.sugar.Errorf("unable to get index file %s from S3: %w", indexFullPath, err)
-		return nil, fmt.Errorf("error loading catalog: %w", err)
-	}
-	indexContents, err := io.ReadAll(indexObjectOutput.Body)
-	if err != nil {
-		s.sugar.Errorf("unable to read index file %s: %w", indexFullPath, err)
-		return nil, fmt.Errorf("error loading catalog: %w", err)
+		errWrapped := fmt.Errorf("unable to get index file %s from S3: %w", indexFullPath, err)
+		s.sugar.Error(errWrapped)
+		return nil, errWrapped
 	}
 	var index MirrorIndex
 	err = json.Unmarshal(indexContents, &index)
@@ -43,18 +51,11 @@ func (s S3ProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanc
 	// the provider, and then we check the etag against the object's current etag -
 	// if the etag matches what we recorded, then we assume the object is okay
 	etagMapFullPath := filepath.Join(s.prefix, s.provider.String(), S3_ETAG_MAP_FILE)
-	etagMapObjectOutput, err := s.s3client.GetObject(s.context, &awss3.GetObjectInput{
-		Bucket: &s.bucket,
-		Key:    &etagMapFullPath,
-	})
+	etagMapContents, err := s.s3client.GetObjectContents(s.bucket, etagMapFullPath)
 	if err != nil {
-		s.sugar.Errorf("unable to get etag map file %s from S3: %w", etagMapFullPath, err)
-		return nil, fmt.Errorf("error loading catalog: %w", err)
-	}
-	etagMapContents, err := io.ReadAll(etagMapObjectOutput.Body)
-	if err != nil {
-		s.sugar.Errorf("unable to read etag map file %s: %w", etagMapFullPath, err)
-		return nil, fmt.Errorf("error loading catalog: %w", err)
+		errWrapped := fmt.Errorf("unable to get etag map file %s from S3: %w", etagMapFullPath, err)
+		s.sugar.Error(errWrapped)
+		return nil, errWrapped
 	}
 	var etagMap map[string]S3ObjectChecksum
 	err = json.Unmarshal(etagMapContents, &etagMap)
@@ -69,19 +70,13 @@ func (s S3ProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanc
 	for versionNumber := range index.Versions {
 		sugar.Debugf("examining version %s", versionNumber)
 		versionJsonFullPath := filepath.Join(s.prefix, s.provider.String(), fmt.Sprintf("%s.json", versionNumber))
-		versionJsonObjectOutput, err := s.s3client.GetObject(s.context, &awss3.GetObjectInput{
-			Bucket: &s.bucket,
-			Key:    &versionJsonFullPath,
-		})
+		versionJsonContents, err := s.s3client.GetObjectContents(s.bucket, versionJsonFullPath)
 		if err != nil {
-			s.sugar.Errorf("unable to get version JSON file %s from S3: %w", versionJsonFullPath, err)
+			errWrapped := fmt.Errorf("unable to get version JSON file %s from S3: %w", versionJsonFullPath, err)
+			s.sugar.Error(errWrapped)
 			continue
 		}
-		versionJsonContents, err := io.ReadAll(versionJsonObjectOutput.Body)
-		if err != nil {
-			s.sugar.Errorf("unable to read version JSON file %s: %w", versionJsonFullPath, err)
-			continue
-		}
+
 		var archives MirrorArchives
 		err = json.Unmarshal(versionJsonContents, &archives)
 		if err != nil {
@@ -133,28 +128,9 @@ func (s S3ProviderStorageConfiguration) VerifyCatalogAgainstStorage(
 	sugar.Debugf("verifying catalog data: %v", catalog)
 
 	storagePath := filepath.Join(s.prefix, s.provider.String())
-	var continuationToken *string
-	doneListing := false
-	objects := make(map[string]awss3types.Object)
-	for {
-		if doneListing {
-			break
-		}
-		input := awss3.ListObjectsV2Input{
-			Bucket:            &s.bucket,
-			ContinuationToken: continuationToken,
-			Prefix:            &storagePath,
-		}
-		objectListOutput, err := s.s3client.ListObjectsV2(s.context, &input)
-		if err != nil {
-			sugar.Errorf("error listing objects from S3: %w", err)
-			return nil, nil, fmt.Errorf("unable to list objects from S3: %w", err)
-		}
-		for _, object := range objectListOutput.Contents {
-			objects[*object.Key] = object
-		}
-		doneListing = !objectListOutput.IsTruncated
-		continuationToken = objectListOutput.NextContinuationToken
+	objects, err := s.s3client.ListPrefix(s.bucket, storagePath)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	sugar.Debugf("got objects from S3: %#v\n", objects)
@@ -213,12 +189,7 @@ func (s S3ProviderStorageConfiguration) WriteProviderBinaryDataToStorage(
 	// now upload to S3
 	key := filepath.Join(s.prefix, pi.Provider.GetDownloadBase(), pi.GetDownloadedFileName())
 	// TODO also calculate SHA256 b64 encoded and provide it here
-	reader := bytes.NewReader(binaryData)
-	putObjectOutput, err := s.s3client.PutObject(s.context, &awss3.PutObjectInput{
-		Bucket: &s.bucket,
-		Key:    &key,
-		Body:   reader,
-	})
+	etag, err := s.s3client.PutObject(s.bucket, key, binaryData)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +198,7 @@ func (s S3ProviderStorageConfiguration) WriteProviderBinaryDataToStorage(
 		ProviderSpecificInstance: pi,
 		H1Checksum:               hash,
 		S3ObjectChecksum: S3ObjectChecksum{
-			ETag:       *putObjectOutput.ETag,
+			ETag:       *etag,
 			H1Checksum: hash,
 		},
 		FullPath: key,
@@ -271,15 +242,7 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 		}
 
 		versionJsonPath := filepath.Join(s.prefix, s.provider.GetDownloadBase(), fmt.Sprintf("%s.json", version))
-
-		reader := bytes.NewReader(versionJson)
-		_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{
-			Body:        reader,
-			Bucket:      &s.bucket,
-			ContentType: pointer.String("application/json"),
-			Key:         &versionJsonPath,
-		})
-
+		_, err = s.s3client.PutObjectWithContentType(s.bucket, versionJsonPath, versionJson, "application/json")
 		if err != nil {
 			return fmt.Errorf("error writing version JSON: %w", err)
 		}
@@ -292,15 +255,7 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 		return fmt.Errorf("error marshalling mirror index JSON: %w", err)
 	}
 	mirrorIndexJsonPath := filepath.Join(s.prefix, s.provider.GetDownloadBase(), MIRROR_INDEX_FILE)
-
-	mirrorIndexReader := bytes.NewReader(mirrorIndexJson)
-	_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{
-		Body:        mirrorIndexReader,
-		Bucket:      &s.bucket,
-		ContentType: pointer.String("application/json"),
-		Key:         &mirrorIndexJsonPath,
-	})
-
+	_, err = s.s3client.PutObjectWithContentType(s.bucket, mirrorIndexJsonPath, mirrorIndexJson, "application/json")
 	if err != nil {
 		return fmt.Errorf("error writing index JSON: %w", err)
 	}
@@ -311,14 +266,7 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 		return fmt.Errorf("error marshalling etag map JSON: %w", err)
 	}
 	etagMapJsonPath := filepath.Join(s.prefix, s.provider.GetDownloadBase(), S3_ETAG_MAP_FILE)
-
-	etagReader := bytes.NewReader(etagMapJson)
-	_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{
-		Body:        etagReader,
-		Bucket:      &s.bucket,
-		ContentType: pointer.String("application/json"),
-		Key:         &etagMapJsonPath,
-	})
+	_, err = s.s3client.PutObjectWithContentType(s.bucket, etagMapJsonPath, etagMapJson, "application/json")
 	if err != nil {
 		return fmt.Errorf("error writing etag map JSON: %w", err)
 	}

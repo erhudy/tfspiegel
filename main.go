@@ -10,10 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
-
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
@@ -144,40 +140,28 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 			}
 		} else if config.DownloadDestination.Type == STORAGE_TYPE_S3 {
 			ctx := context.Background()
-			awscfg, err := awsconfig.LoadDefaultConfig(ctx)
+			s3client, err := NewS3Client(ctx, config.DownloadDestination.S3Config.Endpoint)
 			if err != nil {
 				return err
 			}
-			if config.DownloadDestination.S3Config.Endpoint != "" {
-				const defaultRegion = "us-east-1"
-				staticResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-					return aws.Endpoint{
-						PartitionID:       "aws",
-						URL:               config.DownloadDestination.S3Config.Endpoint,
-						SigningRegion:     defaultRegion,
-						HostnameImmutable: true,
-					}, nil
-				})
-
-				awscfg.Region = defaultRegion
-				awscfg.EndpointResolverWithOptions = staticResolver
-			}
-			prefix := config.DownloadDestination.S3Config.Prefix
-
-			s3client := awss3.NewFromConfig(awscfg)
 
 			d = ProviderDownloader{
 				Storage: S3ProviderStorageConfiguration{
 					bucket:                  config.DownloadDestination.S3Config.Bucket,
 					context:                 ctx,
-					prefix:                  prefix,
+					prefix:                  config.DownloadDestination.S3Config.Prefix,
 					provider:                provider,
-					s3client:                *s3client,
+					s3client:                s3client,
 					sugar:                   sugar,
 					wantedProviderInstances: wantedProviderVersionedInstances,
 				},
 			}
 		}
+		err = d.Storage.ValidatePrerequisites()
+		if err != nil {
+			return fmt.Errorf("error validating storage prerequisites: %w", err)
+		}
+
 		catalogContents, err := d.Storage.LoadCatalog()
 		var valid []ProviderSpecificInstanceBinary
 		var invalid []ProviderSpecificInstanceBinary

@@ -42,6 +42,7 @@ type DownloadDestination struct {
 }
 
 type ProviderStorer interface {
+	ValidatePrerequisites() error
 	LoadCatalog() ([]ProviderSpecificInstanceBinary, error)
 	VerifyCatalogAgainstStorage(catalog []ProviderSpecificInstanceBinary) (validLocalBinaries []ProviderSpecificInstanceBinary, invalidLocalBinaries []ProviderSpecificInstanceBinary, err error)
 	ReconcileWantedProviderInstances(validPSIBs []ProviderSpecificInstanceBinary, invalidPSIBs []ProviderSpecificInstanceBinary, wantedProviderInstances []ProviderSpecificInstance) []ProviderSpecificInstance

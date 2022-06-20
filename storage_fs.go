@@ -10,6 +10,10 @@ import (
 	"golang.org/x/mod/sumdb/dirhash"
 )
 
+func (s FSProviderStorageConfiguration) ValidatePrerequisites() error {
+	return nil
+}
+
 // for filesystem mirroring we use the Terraform mirror index and the individual JSON files as the catalog
 func (s FSProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanceBinary, error) {
 	indexFullPath := filepath.Join(s.downloadRoot, s.provider.String(), MIRROR_INDEX_FILE)

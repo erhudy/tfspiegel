@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 
-	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"go.uber.org/zap"
 )
 
@@ -23,7 +22,7 @@ type S3ProviderStorageConfiguration struct {
 	context                 context.Context
 	prefix                  string
 	provider                Provider
-	s3client                awss3.Client
+	s3client                *TFSpiegelS3Client
 	sugar                   *zap.SugaredLogger
 	wantedProviderInstances []ProviderSpecificInstance
 }

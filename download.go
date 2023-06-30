@@ -50,14 +50,14 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 			lastErr = err
 			sugar.Errorf("error making HTTP request for PVI %s: %w", pi, err)
 			retries += 1
-			break
+			continue
 		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = err
 			sugar.Errorf("error getting HTTP response for PVI %s: %w", pi, err)
 			retries += 1
-			break
+			continue
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
@@ -65,7 +65,7 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 			lastErr = err
 			sugar.Errorf("error reading HTTP response body for PVI %s: %w", pi, err)
 			retries += 1
-			break
+			continue
 		}
 
 		var registryDownloadResponse HCTFRegistryDownloadResponse
@@ -74,7 +74,7 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 			lastErr = err
 			sugar.Errorf("error unmarshalling response body for PVI %s: %w", pi, err)
 			retries += 1
-			break
+			continue
 		}
 
 		downloadReq, err := http.NewRequest(http.MethodGet, registryDownloadResponse.DownloadURL, nil)
@@ -82,14 +82,14 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 			lastErr = err
 			sugar.Errorf("error making HTTP download request for PVI %s: %w", pi, err)
 			retries += 1
-			break
+			continue
 		}
 		downloadResp, err := httpClient.Do(downloadReq)
 		if err != nil {
 			lastErr = err
 			sugar.Errorf("error downloading binary for PVI %s: %w", pi, err)
 			retries += 1
-			break
+			continue
 		}
 
 		hasher := sha256.New()
@@ -98,7 +98,7 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 			lastErr = err
 			sugar.Errorf("error reading downloaded binary for PVI %s: %w", pi, err)
 			retries += 1
-			break
+			continue
 		}
 
 		_, err = hasher.Write(providerBinary)
@@ -106,7 +106,7 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 			lastErr = err
 			sugar.Errorf("error checksumming provider for PVI %s: %w", pi, err)
 			retries += 1
-			break
+			continue
 		}
 
 		checksum := fmt.Sprintf("%x", hasher.Sum(nil))
@@ -114,7 +114,7 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 			lastErr = fmt.Errorf("got SHA %x, expected %s", checksum, registryDownloadResponse.Shasum)
 			sugar.Errorf("error making HTTP request for PVI %s: %w", pi, lastErr)
 			retries += 1
-			break
+			continue
 		}
 
 		psib, err = d.Storage.WriteProviderBinaryDataToStorage(providerBinary, pi)
@@ -122,7 +122,7 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 			lastErr = err
 			sugar.Errorf("error writing binary data to storage for PVI %s: %w", pi, lastErr)
 			retries += 1
-			break
+			continue
 		}
 
 		completed = true

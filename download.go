@@ -134,3 +134,26 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 
 	return psib, nil
 }
+
+// removes versions from psibs where we don't have every OS+arch combination downloaded
+// this is only to remove the version from index.json, we still keep the existing providers around so that we don't need to redownload everything later
+func FilterVersionsWithFailedPSIBs(psibs []ProviderSpecificInstanceBinary, failedPvis []ProviderSpecificInstance) []ProviderSpecificInstanceBinary {
+	filteredPsibs := []ProviderSpecificInstanceBinary{}
+
+	for _, p := range psibs {
+		foundInFailed := false
+		for _, fp := range failedPvis {
+			if p.Name == fp.Name && p.Owner == fp.Owner && p.Version == fp.Version {
+				foundInFailed = true
+				break
+			}
+		}
+		if foundInFailed {
+			sugar.Warnf("filtering %s out due to only having some of the providers for version %s", p.Provider.String(), p.Version)
+		} else {
+			filteredPsibs = append(filteredPsibs, p)
+		}
+	}
+
+	return filteredPsibs
+}

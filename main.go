@@ -212,16 +212,23 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 		var psibs []ProviderSpecificInstanceBinary
 		psibs = append(psibs, valid...)
 
+		// we need to record failed downloads as well so that we can exclude that entire version from the catalog,
+		// in instances where some particular OS+arch combo of a provider fails to download for some reason
+		failedPvis := []ProviderSpecificInstance{}
+
 		for _, pvi := range pvisToDownload {
 			psib, err := d.MirrorProviderInstanceToDest(pvi)
 			if err != nil {
 				sugar.Errorf("error mirroring provider instance %s: %w", pvi, err)
+				failedPvis = append(failedPvis, pvi)
 				continue
 			}
 			psibs = append(psibs, *psib)
 		}
 
-		err = d.Storage.StoreCatalog(psibs)
+		finalPsibs := FilterVersionsWithFailedPSIBs(psibs, failedPvis)
+
+		err = d.Storage.StoreCatalog(finalPsibs)
 		if err != nil {
 			sugar.Errorf("error writing catalog for provider %s: %w", provider, err)
 			continue

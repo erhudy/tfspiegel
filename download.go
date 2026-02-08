@@ -13,6 +13,8 @@ import (
 
 var httpClient http.Client
 var sugar *zap.SugaredLogger
+var registryScheme = "https"
+var retrySleepFunc = func(d time.Duration) { time.Sleep(d) }
 
 func (pp HCTFProviderPlatform) String() string {
 	return fmt.Sprintf("%s_%s", pp.OS, pp.Arch)
@@ -21,7 +23,7 @@ func (pp HCTFProviderPlatform) String() string {
 func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificInstance) (psib *ProviderSpecificInstanceBinary, err error) {
 	sugar.Infof("mirroring PVI %s", pi)
 
-	downloadResponseUrl := fmt.Sprintf("https://%s/v1/providers/%s/%s/%s/download/%s/%s", pi.Hostname, pi.Owner, pi.Name, pi.Version, pi.OS, pi.Arch)
+	downloadResponseUrl := fmt.Sprintf("%s://%s/v1/providers/%s/%s/%s/download/%s/%s", registryScheme, pi.Hostname, pi.Owner, pi.Name, pi.Version, pi.OS, pi.Arch)
 
 	retries := 0
 	maxRetries := 5
@@ -38,7 +40,7 @@ func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificIns
 		if retries > 0 {
 			sleepFor := retries * retries
 			sugar.Warnf("sleeping %d seconds", sleepFor)
-			time.Sleep(time.Duration(sleepFor))
+			retrySleepFunc(time.Duration(sleepFor) * time.Second)
 		}
 		if retries >= maxRetries {
 			sugar.Errorf("hit max retries of %d for PVI %s", retries, pi)

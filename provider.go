@@ -45,7 +45,7 @@ func NewProviderFromConfigProvider(providerURL string) (Provider, error) {
 	default:
 		provider.Hostname = splitURL[0]
 		provider.Owner = splitURL[1]
-		provider.Name = strings.Join(splitURL[2:(len(splitURL)-1)], "/")
+		provider.Name = strings.Join(splitURL[2:], "/")
 	}
 
 	return provider, nil
@@ -53,7 +53,7 @@ func NewProviderFromConfigProvider(providerURL string) (Provider, error) {
 
 // Fetches the JSON file from the registry for a given provider that lists the available versions and platforms.
 func (p Provider) GetProviderMetadataFromRegistry() (RemoteProviderMetadata, error) {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://%s/v1/providers/%s/%s/versions", p.Hostname, p.Owner, p.Name), nil)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s/v1/providers/%s/%s/versions", registryScheme, p.Hostname, p.Owner, p.Name), nil)
 	if err != nil {
 		panic(err)
 	}

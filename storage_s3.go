@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	awss3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/xorcare/pointer"
@@ -16,18 +17,18 @@ import (
 )
 
 func (s S3ProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanceBinary, error) {
-	indexFullPath := filepath.Join(s.prefix, s.provider.String(), MIRROR_INDEX_FILE)
+	indexFullPath := filepath.Join(s.prefix, s.provider.String(), mirrorIndexFile)
 	indexObjectOutput, err := s.s3client.GetObject(s.context, &awss3.GetObjectInput{
 		Bucket: &s.bucket,
 		Key:    &indexFullPath,
 	})
 	if err != nil {
-		s.sugar.Errorf("unable to get index file %s from S3: %w", indexFullPath, err)
+		s.sugar.Errorf("unable to get index file %s from S3: %v", indexFullPath, err)
 		return nil, fmt.Errorf("error loading catalog: %w", err)
 	}
 	indexContents, err := io.ReadAll(indexObjectOutput.Body)
 	if err != nil {
-		s.sugar.Errorf("unable to read index file %s: %w", indexFullPath, err)
+		s.sugar.Errorf("unable to read index file %s: %v", indexFullPath, err)
 		return nil, fmt.Errorf("error loading catalog: %w", err)
 	}
 	var index MirrorIndex
@@ -35,25 +36,25 @@ func (s S3ProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanc
 	if err != nil {
 		return nil, err
 	}
-	sugar.Debugf("unmarshalled index: %v", index)
+	s.sugar.Debugf("unmarshalled index: %v", index)
 
 	// because we cannot get the h1 hash of an object in S3 directly,
 	// we instead store another metadata file in S3 that has a list of object keys
 	// with their expected etags and the H1 checksum that we recorded when we downloaded
 	// the provider, and then we check the etag against the object's current etag -
 	// if the etag matches what we recorded, then we assume the object is okay
-	etagMapFullPath := filepath.Join(s.prefix, s.provider.String(), S3_ETAG_MAP_FILE)
+	etagMapFullPath := filepath.Join(s.prefix, s.provider.String(), s3EtagMapFile)
 	etagMapObjectOutput, err := s.s3client.GetObject(s.context, &awss3.GetObjectInput{
 		Bucket: &s.bucket,
 		Key:    &etagMapFullPath,
 	})
 	if err != nil {
-		s.sugar.Errorf("unable to get etag map file %s from S3: %w", etagMapFullPath, err)
+		s.sugar.Errorf("unable to get etag map file %s from S3: %v", etagMapFullPath, err)
 		return nil, fmt.Errorf("error loading catalog: %w", err)
 	}
 	etagMapContents, err := io.ReadAll(etagMapObjectOutput.Body)
 	if err != nil {
-		s.sugar.Errorf("unable to read etag map file %s: %w", etagMapFullPath, err)
+		s.sugar.Errorf("unable to read etag map file %s: %v", etagMapFullPath, err)
 		return nil, fmt.Errorf("error loading catalog: %w", err)
 	}
 	var etagMap map[string]S3ObjectChecksum
@@ -61,31 +62,31 @@ func (s S3ProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanc
 	if err != nil {
 		return nil, err
 	}
-	sugar.Debugf("unmarshalled etag map: %v", etagMap)
+	s.sugar.Debugf("unmarshalled etag map: %v", etagMap)
 
 	var psibs []ProviderSpecificInstanceBinary
 	// per Hashicorp docs at https://www.terraform.io/internals/provider-network-mirror-protocol#sample-response
 	// the value for each key is currently an empty object
 	for versionNumber := range index.Versions {
-		sugar.Debugf("examining version %s", versionNumber)
+		s.sugar.Debugf("examining version %s", versionNumber)
 		versionJsonFullPath := filepath.Join(s.prefix, s.provider.String(), fmt.Sprintf("%s.json", versionNumber))
 		versionJsonObjectOutput, err := s.s3client.GetObject(s.context, &awss3.GetObjectInput{
 			Bucket: &s.bucket,
 			Key:    &versionJsonFullPath,
 		})
 		if err != nil {
-			s.sugar.Errorf("unable to get version JSON file %s from S3: %w", versionJsonFullPath, err)
+			s.sugar.Errorf("unable to get version JSON file %s from S3: %v", versionJsonFullPath, err)
 			continue
 		}
 		versionJsonContents, err := io.ReadAll(versionJsonObjectOutput.Body)
 		if err != nil {
-			s.sugar.Errorf("unable to read version JSON file %s: %w", versionJsonFullPath, err)
+			s.sugar.Errorf("unable to read version JSON file %s: %v", versionJsonFullPath, err)
 			continue
 		}
 		var archives MirrorArchives
 		err = json.Unmarshal(versionJsonContents, &archives)
 		if err != nil {
-			s.sugar.Errorf("unable to unmarshal version JSON file %s: %w")
+			s.sugar.Errorf("unable to unmarshal version JSON file %s: %v", versionJsonFullPath, err)
 		}
 
 		for osAndArch, hashesAndUrl := range archives.Archives {
@@ -93,7 +94,7 @@ func (s S3ProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanc
 				s.sugar.Errorf("provider version %s (%s) has multiple available hashes", versionNumber, osAndArch)
 				continue
 			}
-			os, arch, found := strings.Cut(osAndArch, "_")
+			osName, arch, found := strings.Cut(osAndArch, "_")
 			if !found {
 				s.sugar.Errorf("provider version %s (%s) did not have expected split delimiter _", versionNumber, osAndArch)
 				continue
@@ -111,11 +112,11 @@ func (s S3ProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanc
 				ProviderSpecificInstance: ProviderSpecificInstance{
 					Provider: s.provider,
 					Version:  versionNumber,
-					OS:       os,
+					OS:       osName,
 					Arch:     arch,
 				},
 			}
-			sugar.Debugf("generated PSIB %#v", psib)
+			s.sugar.Debugf("generated PSIB %#v", psib)
 			psibs = append(psibs, psib)
 		}
 	}
@@ -130,16 +131,13 @@ func (s S3ProviderStorageConfiguration) VerifyCatalogAgainstStorage(
 	invalidLocalBinaries []ProviderSpecificInstanceBinary,
 	err error,
 ) {
-	sugar.Debugf("verifying catalog data: %v", catalog)
+	s.sugar.Debugf("verifying catalog data: %v", catalog)
 
 	storagePath := filepath.Join(s.prefix, s.provider.String())
 	var continuationToken *string
 	doneListing := false
 	objects := make(map[string]awss3types.Object)
-	for {
-		if doneListing {
-			break
-		}
+	for !doneListing {
 		input := awss3.ListObjectsV2Input{
 			Bucket:            &s.bucket,
 			ContinuationToken: continuationToken,
@@ -147,23 +145,23 @@ func (s S3ProviderStorageConfiguration) VerifyCatalogAgainstStorage(
 		}
 		objectListOutput, err := s.s3client.ListObjectsV2(s.context, &input)
 		if err != nil {
-			sugar.Errorf("error listing objects from S3: %w", err)
+			s.sugar.Errorf("error listing objects from S3: %v", err)
 			return nil, nil, fmt.Errorf("unable to list objects from S3: %w", err)
 		}
 		for _, object := range objectListOutput.Contents {
 			objects[*object.Key] = object
 		}
-		doneListing = !objectListOutput.IsTruncated
+		doneListing = !aws.ToBool(objectListOutput.IsTruncated)
 		continuationToken = objectListOutput.NextContinuationToken
 	}
 
-	sugar.Debugf("got objects from S3: %#v\n", objects)
+	s.sugar.Debugf("got objects from S3: %#v\n", objects)
 
 	for _, pib := range catalog {
-		sugar.Debugf("looking for %s in S3 object map", pib.FullPath)
+		s.sugar.Debugf("looking for %s in S3 object map", pib.FullPath)
 		matchingObject, ok := objects[pib.FullPath]
 		if !ok {
-			sugar.Debugf("not found")
+			s.sugar.Debugf("not found")
 			invalidLocalBinaries = append(invalidLocalBinaries, pib)
 			continue
 		}
@@ -195,11 +193,12 @@ func (s S3ProviderStorageConfiguration) WriteProviderBinaryDataToStorage(
 ) (psib *ProviderSpecificInstanceBinary, err error) {
 	// in order to compute the H1 we will need to write the binary data to temporary local storage first
 	file, err := os.CreateTemp("", "tfspiegel-*.zip")
-	defer os.Remove(file.Name())
-	defer file.Close()
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = file.Close() }()
+	defer func() { _ = os.Remove(file.Name()) }()
+
 	_, err = file.Write(binaryData)
 	if err != nil {
 		return nil, err
@@ -211,7 +210,7 @@ func (s S3ProviderStorageConfiguration) WriteProviderBinaryDataToStorage(
 	}
 
 	// now upload to S3
-	key := filepath.Join(s.prefix, pi.Provider.GetDownloadBase(), pi.GetDownloadedFileName())
+	key := filepath.Join(s.prefix, pi.GetDownloadBase(), pi.GetDownloadedFileName())
 	// TODO also calculate SHA256 b64 encoded and provide it here
 	reader := bytes.NewReader(binaryData)
 	putObjectOutput, err := s.s3client.PutObject(s.context, &awss3.PutObjectInput{
@@ -291,7 +290,7 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 	if err != nil {
 		return fmt.Errorf("error marshalling mirror index JSON: %w", err)
 	}
-	mirrorIndexJsonPath := filepath.Join(s.prefix, s.provider.GetDownloadBase(), MIRROR_INDEX_FILE)
+	mirrorIndexJsonPath := filepath.Join(s.prefix, s.provider.GetDownloadBase(), mirrorIndexFile)
 
 	mirrorIndexReader := bytes.NewReader(mirrorIndexJson)
 	_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{
@@ -310,7 +309,7 @@ func (s S3ProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 	if err != nil {
 		return fmt.Errorf("error marshalling etag map JSON: %w", err)
 	}
-	etagMapJsonPath := filepath.Join(s.prefix, s.provider.GetDownloadBase(), S3_ETAG_MAP_FILE)
+	etagMapJsonPath := filepath.Join(s.prefix, s.provider.GetDownloadBase(), s3EtagMapFile)
 
 	etagReader := bytes.NewReader(etagMapJson)
 	_, err = s.s3client.PutObject(s.context, &awss3.PutObjectInput{

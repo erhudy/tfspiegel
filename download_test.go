@@ -7,282 +7,341 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 func TestHCTFProviderPlatformString(t *testing.T) {
 	pp := HCTFProviderPlatform{OS: "linux", Arch: "amd64"}
 	expected := "linux_amd64"
-	if got := pp.String(); got != expected {
+	got := pp.String()
+	if got != expected {
 		t.Errorf("String() = %q, want %q", got, expected)
 	}
 }
 
-func TestFilterVersionsWithFailedPSIBs_NoFailures(t *testing.T) {
-	psibs := []ProviderSpecificInstanceBinary{
-		{
+func TestFilterVersionsWithFailedPSIBs(t *testing.T) {
+	awsProvider := Provider{Hostname: "registry.terraform.io", Owner: "hashicorp", Name: "aws"}
+	gcpProvider := Provider{Hostname: "registry.terraform.io", Owner: "hashicorp", Name: "google"}
+
+	makePSIB := func(p Provider, version, os, arch string) ProviderSpecificInstanceBinary {
+		return ProviderSpecificInstanceBinary{
 			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: Provider{Hostname: "r", Owner: "o", Name: "n"},
-				Version:  "1.0.0", OS: "linux", Arch: "amd64",
+				Provider: p, Version: version, OS: os, Arch: arch,
 			},
-			H1Checksum: "h1:abc",
-		},
-	}
-
-	result := FilterVersionsWithFailedPSIBs(psibs, nil)
-	if len(result) != 1 {
-		t.Errorf("expected 1 result, got %d", len(result))
-	}
-}
-
-func TestFilterVersionsWithFailedPSIBs_OneVersionFailed(t *testing.T) {
-	psibs := []ProviderSpecificInstanceBinary{
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: Provider{Hostname: "r", Owner: "o", Name: "n"},
-				Version:  "1.0.0", OS: "linux", Arch: "amd64",
-			},
-		},
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: Provider{Hostname: "r", Owner: "o", Name: "n"},
-				Version:  "2.0.0", OS: "linux", Arch: "amd64",
-			},
-		},
-	}
-	failed := []ProviderSpecificInstance{
-		{Provider: Provider{Hostname: "r", Owner: "o", Name: "n"}, Version: "1.0.0", OS: "darwin", Arch: "arm64"},
-	}
-
-	result := FilterVersionsWithFailedPSIBs(psibs, failed)
-	if len(result) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(result))
-	}
-	if result[0].Version != "2.0.0" {
-		t.Errorf("expected version 2.0.0 to remain, got %s", result[0].Version)
-	}
-}
-
-func TestFilterVersionsWithFailedPSIBs_AllFailed(t *testing.T) {
-	psibs := []ProviderSpecificInstanceBinary{
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: Provider{Hostname: "r", Owner: "o", Name: "n"},
-				Version:  "1.0.0", OS: "linux", Arch: "amd64",
-			},
-		},
-	}
-	failed := []ProviderSpecificInstance{
-		{Provider: Provider{Hostname: "r", Owner: "o", Name: "n"}, Version: "1.0.0", OS: "linux", Arch: "amd64"},
-	}
-
-	result := FilterVersionsWithFailedPSIBs(psibs, failed)
-	if len(result) != 0 {
-		t.Errorf("expected 0 results, got %d", len(result))
-	}
-}
-
-func TestFilterVersionsWithFailedPSIBs_EmptyInputs(t *testing.T) {
-	result := FilterVersionsWithFailedPSIBs(nil, nil)
-	if len(result) != 0 {
-		t.Errorf("expected 0 results, got %d", len(result))
-	}
-}
-
-// mockProviderStorer implements the ProviderStorer interface for testing
-type mockProviderStorer struct {
-	writeFunc func(binaryData []byte, pi ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error)
-}
-
-func (m mockProviderStorer) LoadCatalog() ([]ProviderSpecificInstanceBinary, error) {
-	panic("not implemented")
-}
-
-func (m mockProviderStorer) VerifyCatalogAgainstStorage(catalog []ProviderSpecificInstanceBinary) ([]ProviderSpecificInstanceBinary, []ProviderSpecificInstanceBinary, error) {
-	panic("not implemented")
-}
-
-func (m mockProviderStorer) ReconcileWantedProviderInstances(validPSIBs []ProviderSpecificInstanceBinary, invalidPSIBs []ProviderSpecificInstanceBinary, wantedProviderInstances []ProviderSpecificInstance) []ProviderSpecificInstance {
-	panic("not implemented")
-}
-
-func (m mockProviderStorer) WriteProviderBinaryDataToStorage(binaryData []byte, pi ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
-	return m.writeFunc(binaryData, pi)
-}
-
-func (m mockProviderStorer) StoreCatalog(psibs []ProviderSpecificInstanceBinary) error {
-	panic("not implemented")
-}
-
-func TestMirrorProviderInstanceToDest_Success(t *testing.T) {
-	// Disable retry sleep for tests
-	oldSleep := retrySleepFunc
-	retrySleepFunc = func(d time.Duration) {}
-	defer func() { retrySleepFunc = oldSleep }()
-
-	// Create test binary data and compute its SHA256
-	binaryData := []byte("fake zip file content for testing")
-	hasher := sha256.New()
-	hasher.Write(binaryData)
-	checksum := fmt.Sprintf("%x", hasher.Sum(nil))
-
-	// Mock download server - serves both the registry response and the binary
-	mux := http.NewServeMux()
-
-	registryResponse := HCTFRegistryDownloadResponse{
-		Shasum: checksum,
-	}
-
-	mux.HandleFunc("/v1/providers/hashicorp/testprov/1.0.0/download/linux/amd64", func(w http.ResponseWriter, r *http.Request) {
-		// Set download_url to point to our own server
-		registryResponse.DownloadURL = fmt.Sprintf("http://%s/download/testprov.zip", r.Host)
-		json.NewEncoder(w).Encode(registryResponse)
-	})
-	mux.HandleFunc("/download/testprov.zip", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(binaryData)
-	})
-
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	host := server.URL[len("http://"):]
-
-	oldScheme := registryScheme
-	registryScheme = "http"
-	defer func() { registryScheme = oldScheme }()
-
-	pi := ProviderSpecificInstance{
-		Provider: Provider{Hostname: host, Owner: "hashicorp", Name: "testprov"},
-		Version:  "1.0.0",
-		OS:       "linux",
-		Arch:     "amd64",
-	}
-
-	mock := mockProviderStorer{
-		writeFunc: func(data []byte, pi ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
-			return &ProviderSpecificInstanceBinary{
-				ProviderSpecificInstance: pi,
-				H1Checksum:              "h1:test",
-				FullPath:                "/tmp/test.zip",
-			}, nil
-		},
-	}
-
-	d := ProviderDownloader{Storage: mock}
-	result, err := d.MirrorProviderInstanceToDest(pi)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if result.H1Checksum != "h1:test" {
-		t.Errorf("expected h1:test, got %s", result.H1Checksum)
-	}
-}
-
-func TestMirrorProviderInstanceToDest_ChecksumMismatch(t *testing.T) {
-	oldSleep := retrySleepFunc
-	retrySleepFunc = func(d time.Duration) {}
-	defer func() { retrySleepFunc = oldSleep }()
-
-	binaryData := []byte("fake zip file content for testing")
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/providers/hashicorp/testprov/1.0.0/download/linux/amd64", func(w http.ResponseWriter, r *http.Request) {
-		resp := HCTFRegistryDownloadResponse{
-			Shasum:      "wrong_checksum_value",
-			DownloadURL: fmt.Sprintf("http://%s/download/testprov.zip", r.Host),
 		}
-		json.NewEncoder(w).Encode(resp)
-	})
-	mux.HandleFunc("/download/testprov.zip", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(binaryData)
-	})
-
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	host := server.URL[len("http://"):]
-
-	oldScheme := registryScheme
-	registryScheme = "http"
-	defer func() { registryScheme = oldScheme }()
-
-	pi := ProviderSpecificInstance{
-		Provider: Provider{Hostname: host, Owner: "hashicorp", Name: "testprov"},
-		Version:  "1.0.0",
-		OS:       "linux",
-		Arch:     "amd64",
+	}
+	makePSI := func(p Provider, version, os, arch string) ProviderSpecificInstance {
+		return ProviderSpecificInstance{Provider: p, Version: version, OS: os, Arch: arch}
 	}
 
-	mock := mockProviderStorer{
-		writeFunc: func(data []byte, pi ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
-			t.Fatal("WriteProviderBinaryDataToStorage should not be called on checksum mismatch")
-			return nil, nil
+	tests := []struct {
+		name      string
+		psibs     []ProviderSpecificInstanceBinary
+		failed    []ProviderSpecificInstance
+		wantCount int
+	}{
+		{
+			"no failures returns all",
+			[]ProviderSpecificInstanceBinary{
+				makePSIB(awsProvider, "5.0.0", "linux", "amd64"),
+				makePSIB(awsProvider, "5.0.0", "darwin", "arm64"),
+			},
+			nil,
+			2,
+		},
+		{
+			"one version fails removes all psibs for that version",
+			[]ProviderSpecificInstanceBinary{
+				makePSIB(awsProvider, "5.0.0", "linux", "amd64"),
+				makePSIB(awsProvider, "5.0.0", "darwin", "arm64"),
+				makePSIB(awsProvider, "5.1.0", "linux", "amd64"),
+			},
+			[]ProviderSpecificInstance{
+				makePSI(awsProvider, "5.0.0", "linux", "arm64"),
+			},
+			1,
+		},
+		{
+			"all fail returns empty",
+			[]ProviderSpecificInstanceBinary{
+				makePSIB(awsProvider, "5.0.0", "linux", "amd64"),
+			},
+			[]ProviderSpecificInstance{
+				makePSI(awsProvider, "5.0.0", "darwin", "arm64"),
+			},
+			0,
+		},
+		{
+			"different provider same version only matching provider filtered",
+			[]ProviderSpecificInstanceBinary{
+				makePSIB(awsProvider, "5.0.0", "linux", "amd64"),
+				makePSIB(gcpProvider, "5.0.0", "linux", "amd64"),
+			},
+			[]ProviderSpecificInstance{
+				makePSI(awsProvider, "5.0.0", "linux", "arm64"),
+			},
+			1,
+		},
+		{
+			"empty inputs",
+			nil,
+			nil,
+			0,
 		},
 	}
 
-	d := ProviderDownloader{Storage: mock}
-	result, err := d.MirrorProviderInstanceToDest(pi)
-	if err == nil {
-		t.Fatal("expected error for checksum mismatch, got nil")
-	}
-	if result != nil {
-		t.Error("expected nil result on error")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FilterVersionsWithFailedPSIBs(tt.psibs, tt.failed)
+			if len(got) != tt.wantCount {
+				t.Errorf("got %d psibs, want %d", len(got), tt.wantCount)
+			}
+		})
 	}
 }
 
-func TestMirrorProviderInstanceToDest_StorageWriteError(t *testing.T) {
-	oldSleep := retrySleepFunc
-	retrySleepFunc = func(d time.Duration) {}
-	defer func() { retrySleepFunc = oldSleep }()
+func TestMirrorProviderInstanceToDest(t *testing.T) {
+	origSleep := retrySleep
+	retrySleep = func(int) {}
+	defer func() { retrySleep = origSleep }()
 
-	binaryData := []byte("fake zip file content for testing")
+	origClient := httpClient
+	defer func() { httpClient = origClient }()
+
+	testBinary := []byte("fake provider binary data for testing")
 	hasher := sha256.New()
-	hasher.Write(binaryData)
-	checksum := fmt.Sprintf("%x", hasher.Sum(nil))
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/providers/hashicorp/testprov/1.0.0/download/linux/amd64", func(w http.ResponseWriter, r *http.Request) {
-		resp := HCTFRegistryDownloadResponse{
-			Shasum:      checksum,
-			DownloadURL: fmt.Sprintf("http://%s/download/testprov.zip", r.Host),
-		}
-		json.NewEncoder(w).Encode(resp)
-	})
-	mux.HandleFunc("/download/testprov.zip", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(binaryData)
-	})
-
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	host := server.URL[len("http://"):]
-
-	oldScheme := registryScheme
-	registryScheme = "http"
-	defer func() { registryScheme = oldScheme }()
+	hasher.Write(testBinary)
+	testSHA := fmt.Sprintf("%x", hasher.Sum(nil))
 
 	pi := ProviderSpecificInstance{
-		Provider: Provider{Hostname: host, Owner: "hashicorp", Name: "testprov"},
-		Version:  "1.0.0",
+		Provider: Provider{Hostname: "placeholder", Owner: "hashicorp", Name: "aws"},
+		Version:  "5.0.0",
 		OS:       "linux",
 		Arch:     "amd64",
 	}
 
-	mock := mockProviderStorer{
-		writeFunc: func(data []byte, pi ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
-			return nil, fmt.Errorf("storage write failed")
-		},
-	}
+	t.Run("successful download on first attempt", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
+				resp := HCTFRegistryDownloadResponse{
+					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
+					Shasum:      testSHA,
+				}
+				json.NewEncoder(w).Encode(resp)
+			case r.URL.Path == "/download/aws.zip":
+				w.Write(testBinary)
+			default:
+				w.WriteHeader(404)
+			}
+		}))
+		defer server.Close()
+		httpClient = server.Client()
 
-	d := ProviderDownloader{Storage: mock}
-	result, err := d.MirrorProviderInstanceToDest(pi)
-	if err == nil {
-		t.Fatal("expected error for storage write failure, got nil")
-	}
-	if result != nil {
-		t.Error("expected nil result on error")
-	}
+		serverHost := server.URL[len("https://"):]
+		localPI := pi
+		localPI.Hostname = serverHost
+
+		writeCalled := false
+		mock := mockProviderStorer{
+			writeProviderBinaryDataToStorageFunc: func(data []byte, p ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
+				writeCalled = true
+				return &ProviderSpecificInstanceBinary{
+					ProviderSpecificInstance: p,
+					H1Checksum:              "h1:test",
+					FullPath:                "/tmp/test.zip",
+				}, nil
+			},
+		}
+
+		d := ProviderDownloader{Storage: mock}
+		psib, err := d.MirrorProviderInstanceToDest(localPI)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if psib == nil {
+			t.Fatal("expected non-nil psib")
+		}
+		if !writeCalled {
+			t.Error("expected WriteProviderBinaryDataToStorage to be called")
+		}
+	})
+
+	t.Run("registry returns 404 errors after max retries", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(404)
+		}))
+		defer server.Close()
+		httpClient = server.Client()
+
+		serverHost := server.URL[len("https://"):]
+		localPI := pi
+		localPI.Hostname = serverHost
+
+		mock := mockProviderStorer{
+			writeProviderBinaryDataToStorageFunc: func(data []byte, p ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
+				t.Fatal("should not be called")
+				return nil, nil
+			},
+		}
+
+		d := ProviderDownloader{Storage: mock}
+		_, err := d.MirrorProviderInstanceToDest(localPI)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("binary download returns 404", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64" {
+				resp := HCTFRegistryDownloadResponse{
+					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
+					Shasum:      testSHA,
+				}
+				json.NewEncoder(w).Encode(resp)
+			} else {
+				w.WriteHeader(404)
+			}
+		}))
+		defer server.Close()
+		httpClient = server.Client()
+
+		serverHost := server.URL[len("https://"):]
+		localPI := pi
+		localPI.Hostname = serverHost
+
+		mock := mockProviderStorer{
+			writeProviderBinaryDataToStorageFunc: func(data []byte, p ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
+				t.Fatal("should not be called")
+				return nil, nil
+			},
+		}
+
+		d := ProviderDownloader{Storage: mock}
+		_, err := d.MirrorProviderInstanceToDest(localPI)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("SHA256 checksum mismatch", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
+				resp := HCTFRegistryDownloadResponse{
+					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
+					Shasum:      "0000000000000000000000000000000000000000000000000000000000000000",
+				}
+				json.NewEncoder(w).Encode(resp)
+			case r.URL.Path == "/download/aws.zip":
+				w.Write(testBinary)
+			default:
+				w.WriteHeader(404)
+			}
+		}))
+		defer server.Close()
+		httpClient = server.Client()
+
+		serverHost := server.URL[len("https://"):]
+		localPI := pi
+		localPI.Hostname = serverHost
+
+		mock := mockProviderStorer{
+			writeProviderBinaryDataToStorageFunc: func(data []byte, p ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
+				t.Fatal("should not be called")
+				return nil, nil
+			},
+		}
+
+		d := ProviderDownloader{Storage: mock}
+		_, err := d.MirrorProviderInstanceToDest(localPI)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("storage write failure", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
+				resp := HCTFRegistryDownloadResponse{
+					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
+					Shasum:      testSHA,
+				}
+				json.NewEncoder(w).Encode(resp)
+			case r.URL.Path == "/download/aws.zip":
+				w.Write(testBinary)
+			default:
+				w.WriteHeader(404)
+			}
+		}))
+		defer server.Close()
+		httpClient = server.Client()
+
+		serverHost := server.URL[len("https://"):]
+		localPI := pi
+		localPI.Hostname = serverHost
+
+		mock := mockProviderStorer{
+			writeProviderBinaryDataToStorageFunc: func(data []byte, p ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
+				return nil, fmt.Errorf("disk full")
+			},
+		}
+
+		d := ProviderDownloader{Storage: mock}
+		_, err := d.MirrorProviderInstanceToDest(localPI)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("retry succeeds on second attempt", func(t *testing.T) {
+		callCount := 0
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64" {
+				callCount++
+				if callCount == 1 {
+					w.WriteHeader(500)
+					return
+				}
+				resp := HCTFRegistryDownloadResponse{
+					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
+					Shasum:      testSHA,
+				}
+				json.NewEncoder(w).Encode(resp)
+			} else if r.URL.Path == "/download/aws.zip" {
+				w.Write(testBinary)
+			} else {
+				w.WriteHeader(404)
+			}
+		}))
+		defer server.Close()
+		httpClient = server.Client()
+
+		serverHost := server.URL[len("https://"):]
+		localPI := pi
+		localPI.Hostname = serverHost
+
+		mock := mockProviderStorer{
+			writeProviderBinaryDataToStorageFunc: func(data []byte, p ProviderSpecificInstance) (*ProviderSpecificInstanceBinary, error) {
+				return &ProviderSpecificInstanceBinary{
+					ProviderSpecificInstance: p,
+					H1Checksum:              "h1:test",
+					FullPath:                "/tmp/test.zip",
+				}, nil
+			},
+		}
+
+		d := ProviderDownloader{Storage: mock}
+		psib, err := d.MirrorProviderInstanceToDest(localPI)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if psib == nil {
+			t.Fatal("expected non-nil psib")
+		}
+		if callCount < 2 {
+			t.Errorf("expected at least 2 calls to registry, got %d", callCount)
+		}
+	})
 }

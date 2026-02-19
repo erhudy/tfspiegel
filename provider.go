@@ -29,8 +29,8 @@ func (pi ProviderSpecificInstance) GetDownloadedFileName() string {
 
 func NewProviderFromConfigProvider(providerURL string) (Provider, error) {
 	provider := Provider{
-		Hostname: DEFAULT_PROVIDER_HOSTNAME,
-		Owner:    DEFAULT_PROVIDER_OWNER,
+		Hostname: defaultProviderHostname,
+		Owner:    defaultProviderOwner,
 	}
 
 	splitURL := strings.Split(providerURL, "/")
@@ -53,48 +53,75 @@ func NewProviderFromConfigProvider(providerURL string) (Provider, error) {
 
 // Fetches the JSON file from the registry for a given provider that lists the available versions and platforms.
 func (p Provider) GetProviderMetadataFromRegistry() (RemoteProviderMetadata, error) {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s/v1/providers/%s/%s/versions", registryScheme, p.Hostname, p.Owner, p.Name), nil)
-	if err != nil {
-		panic(err)
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		panic(err)
-	}
 	remoteProviderMetadata := RemoteProviderMetadata{
 		Provider: p,
 	}
 
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://%s/v1/providers/%s/%s/versions", p.Hostname, p.Owner, p.Name), nil)
+	if err != nil {
+		return remoteProviderMetadata, fmt.Errorf("error creating HTTP request for provider metadata: %w", err)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return remoteProviderMetadata, fmt.Errorf("error fetching provider metadata from registry: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return remoteProviderMetadata, fmt.Errorf("HTTP %d fetching provider metadata for %s", resp.StatusCode, p)
+	}
+
 	responseJson, err := io.ReadAll(resp.Body)
 	if err != nil {
-		panic(err)
+		return remoteProviderMetadata, fmt.Errorf("error reading provider metadata response body: %w", err)
 	}
 	err = json.Unmarshal(responseJson, &remoteProviderMetadata)
 	if err != nil {
-		panic(err)
+		return remoteProviderMetadata, fmt.Errorf("error unmarshalling provider metadata: %w", err)
 	}
 
 	return remoteProviderMetadata, nil
 }
 
 // Filters the list of available version/platform combos in the remote registry for this provider down to the candidates to be mirrored.
-func (p Provider) FilterToWantedPVIs(providerMetadata RemoteProviderMetadata, versionRange string, osArchs []HCTFProviderPlatform) ([]ProviderSpecificInstance, error) {
+func (p Provider) FilterToWantedPVIs(providerMetadata RemoteProviderMetadata, providerConfig ProviderMirrorConfiguration, osArchs []HCTFProviderPlatform) ([]ProviderSpecificInstance, error) {
 	var filteredProviders []ProviderSpecificInstance
 
 	sugar.Infof("%s", providerMetadata)
 
-	parsedRange, err := semver.ParseRange(versionRange)
+	parsedRange, err := semver.ParseRange(providerConfig.VersionRange)
 	if err != nil {
 		return filteredProviders, err
 	}
 
-	for _, upstreamProvider := range providerMetadata.Versions {
-		version, err := semver.Parse(upstreamProvider.Version)
+	var versionsToSkip []semver.Version
+
+	for _, upvts := range providerConfig.SkipVersions {
+		parsed, err := semver.Parse(upvts)
 		if err != nil {
-			sugar.Errorf("error parsing %s as semver", version)
+			sugar.Errorf("error parsing version to skip '%s' as semver", upvts)
 			continue
 		}
-		if !parsedRange(version) {
+		versionsToSkip = append(versionsToSkip, parsed)
+	}
+
+	for _, upstreamProvider := range providerMetadata.Versions {
+		upstreamVersion, err := semver.Parse(upstreamProvider.Version)
+		if err != nil {
+			sugar.Errorf("error parsing upstream version '%s' as semver", upstreamProvider.Version)
+			continue
+		}
+		if !parsedRange(upstreamVersion) {
+			continue
+		}
+
+		skipThisVersion := false
+		for _, versionToSkip := range versionsToSkip {
+			if upstreamVersion.Equals(versionToSkip) {
+				skipThisVersion = true
+			}
+			break
+		}
+		if skipThisVersion {
 			continue
 		}
 
@@ -104,7 +131,7 @@ func (p Provider) FilterToWantedPVIs(providerMetadata RemoteProviderMetadata, ve
 				if upstreamOSArch.Arch == requestedOSArch.Arch && upstreamOSArch.OS == requestedOSArch.OS {
 					providerInstance := ProviderSpecificInstance{
 						Provider: p,
-						Version:  version.String(),
+						Version:  upstreamVersion.String(),
 						OS:       upstreamOSArch.OS,
 						Arch:     upstreamOSArch.Arch,
 					}
@@ -113,7 +140,7 @@ func (p Provider) FilterToWantedPVIs(providerMetadata RemoteProviderMetadata, ve
 				}
 			}
 			if !foundOSArch {
-				sugar.Errorf("Requested OS/arch combination %s for %s %s not found", requestedOSArch.String(), providerMetadata.Provider, version)
+				sugar.Errorf("Requested OS/arch combination %s for %s %s not found", requestedOSArch.String(), providerMetadata.Provider, upstreamVersion)
 			}
 		}
 	}

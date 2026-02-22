@@ -12,10 +12,10 @@ import (
 
 // for filesystem mirroring we use the Terraform mirror index and the individual JSON files as the catalog
 func (s FSProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanceBinary, error) {
-	indexFullPath := filepath.Join(s.downloadRoot, s.provider.String(), MIRROR_INDEX_FILE)
+	indexFullPath := filepath.Join(s.downloadRoot, s.provider.String(), mirrorIndexFile)
 	indexContents, err := os.ReadFile(indexFullPath)
 	if err != nil {
-		s.sugar.Errorf("unable to read index file %s: %w", indexFullPath, err)
+		s.sugar.Errorf("unable to read index file %s: %v", indexFullPath, err)
 		return nil, fmt.Errorf("error loading catalog: %w", err)
 	}
 	var index MirrorIndex
@@ -23,23 +23,23 @@ func (s FSProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanc
 	if err != nil {
 		return nil, err
 	}
-	sugar.Debugf("unmarshalled index: %v", index)
+	s.sugar.Debugf("unmarshalled index: %v", index)
 
 	var psibs []ProviderSpecificInstanceBinary
 	// per Hashicorp docs at https://www.terraform.io/internals/provider-network-mirror-protocol#sample-response
 	// the value for each key is currently an empty object
 	for versionNumber := range index.Versions {
-		sugar.Debugf("examining version %s", versionNumber)
+		s.sugar.Debugf("examining version %s", versionNumber)
 		versionJsonFullPath := filepath.Join(s.downloadRoot, s.provider.String(), fmt.Sprintf("%s.json", versionNumber))
 		versionJsonContents, err := os.ReadFile(versionJsonFullPath)
 		if err != nil {
-			s.sugar.Errorf("unable to read version JSON file %s: %w", versionJsonFullPath, err)
+			s.sugar.Errorf("unable to read version JSON file %s: %v", versionJsonFullPath, err)
 			continue
 		}
 		var archives MirrorArchives
 		err = json.Unmarshal(versionJsonContents, &archives)
 		if err != nil {
-			s.sugar.Errorf("unable to unmarshal version JSON file %s: %w")
+			s.sugar.Errorf("unable to unmarshal version JSON file %s: %v", versionJsonFullPath, err)
 		}
 
 		for osAndArch, hashesAndUrl := range archives.Archives {
@@ -47,7 +47,7 @@ func (s FSProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanc
 				s.sugar.Errorf("provider version %s (%s) has multiple available hashes", versionNumber, osAndArch)
 				continue
 			}
-			os, arch, found := strings.Cut(osAndArch, "_")
+			osName, arch, found := strings.Cut(osAndArch, "_")
 			if !found {
 				s.sugar.Errorf("provider version %s (%s) did not have expected split delimiter _", versionNumber, osAndArch)
 				continue
@@ -58,11 +58,11 @@ func (s FSProviderStorageConfiguration) LoadCatalog() ([]ProviderSpecificInstanc
 				ProviderSpecificInstance: ProviderSpecificInstance{
 					Provider: s.provider,
 					Version:  versionNumber,
-					OS:       os,
+					OS:       osName,
 					Arch:     arch,
 				},
 			}
-			sugar.Debugf("generated PSIB %#v", psib)
+			s.sugar.Debugf("generated PSIB %#v", psib)
 			psibs = append(psibs, psib)
 		}
 	}
@@ -77,17 +77,18 @@ func (s FSProviderStorageConfiguration) VerifyCatalogAgainstStorage(
 	invalidLocalBinaries []ProviderSpecificInstanceBinary,
 	err error,
 ) {
-	sugar.Debugf("verifying catalog data: %v", catalog)
+	s.sugar.Debugf("verifying catalog data (%d entries)", len(catalog))
 
 	for _, pib := range catalog {
+		s.sugar.Debugf("verifying catalog entry %s", pib.FullPath)
 		hash, err := dirhash.HashZip(pib.FullPath, dirhash.Hash1)
 		if err != nil {
-			sugar.Debugf("err: %w", err)
+			s.sugar.Debugf("err: %v", err)
 			invalidLocalBinaries = append(invalidLocalBinaries, pib)
 			continue
 		}
 		if hash != pib.H1Checksum {
-			sugar.Errorf("checksum %s did not match expected %s", hash, pib.H1Checksum)
+			s.sugar.Errorf("checksum %s did not match expected %s", hash, pib.H1Checksum)
 			invalidLocalBinaries = append(invalidLocalBinaries, pib)
 			continue
 		}
@@ -95,8 +96,8 @@ func (s FSProviderStorageConfiguration) VerifyCatalogAgainstStorage(
 		validLocalBinaries = append(validLocalBinaries, pib)
 	}
 
-	sugar.Debugf("valid local binaries: %v", validLocalBinaries)
-	sugar.Debugf("invalid local binaries: %v", invalidLocalBinaries)
+	s.sugar.Debugf("valid local binaries: %v", validLocalBinaries)
+	s.sugar.Debugf("invalid local binaries: %v", invalidLocalBinaries)
 
 	return validLocalBinaries, invalidLocalBinaries, nil
 }
@@ -181,7 +182,7 @@ func (s FSProviderStorageConfiguration) StoreCatalog(psibs []ProviderSpecificIns
 	if err != nil {
 		return fmt.Errorf("error marshalling mirror index JSON: %w", err)
 	}
-	mirrorIndexJsonPath := filepath.Join(s.downloadRoot, s.provider.GetDownloadBase(), MIRROR_INDEX_FILE)
+	mirrorIndexJsonPath := filepath.Join(s.downloadRoot, s.provider.GetDownloadBase(), mirrorIndexFile)
 	err = os.WriteFile(mirrorIndexJsonPath, mirrorIndexJson, os.FileMode(0644))
 	if err != nil {
 		return fmt.Errorf("error writing index JSON: %w", err)

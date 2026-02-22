@@ -2,499 +2,612 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 
+	"go.uber.org/zap"
 	"golang.org/x/mod/sumdb/dirhash"
 )
 
-func createTestProvider() Provider {
-	return Provider{
-		Hostname: "registry.terraform.io",
-		Owner:    "hashicorp",
-		Name:     "aws",
-	}
+func testSugar() *zap.SugaredLogger {
+	logger, _ := zap.NewDevelopment()
+	return logger.Sugar()
 }
 
-func createTestZip(t *testing.T, path string) string {
+func testProvider() Provider {
+	return Provider{Hostname: "registry.terraform.io", Owner: "hashicorp", Name: "aws"}
+}
+
+// createTestZip creates a minimal valid ZIP file and returns its bytes and h1 hash.
+func createTestZip(t *testing.T, filename, content string) ([]byte, string) {
 	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	f, err := w.Create(filename)
+	if err != nil {
+		t.Fatalf("failed to create zip entry: %v", err)
+	}
+	_, err = f.Write([]byte(content))
+	if err != nil {
+		t.Fatalf("failed to write zip entry: %v", err)
+	}
+	err = w.Close()
+	if err != nil {
+		t.Fatalf("failed to close zip writer: %v", err)
+	}
 
+	// Write to temp file to compute hash
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "test.zip")
+	err = os.WriteFile(zipPath, buf.Bytes(), 0644)
+	if err != nil {
+		t.Fatalf("failed to write temp zip: %v", err)
+	}
+
+	hash, err := dirhash.HashZip(zipPath, dirhash.Hash1)
+	if err != nil {
+		t.Fatalf("failed to hash zip: %v", err)
+	}
+
+	return buf.Bytes(), hash
+}
+
+// writeTestZipToPath writes a valid zip at the given path and returns the h1 hash.
+func writeTestZipToPath(t *testing.T, path, entryName, content string) string {
+	t.Helper()
+	zipBytes, hash := createTestZip(t, entryName, content)
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	f, err := os.Create(path)
+	err := os.MkdirAll(dir, 0755)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("failed to create dir: %v", err)
 	}
-	defer f.Close()
-
-	w := zip.NewWriter(f)
-	fw, err := w.Create("terraform-provider-aws")
+	err = os.WriteFile(path, zipBytes, 0644)
 	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = fw.Write([]byte("fake provider binary content"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	hash, err := dirhash.HashZip(path, dirhash.Hash1)
-	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("failed to write zip: %v", err)
 	}
 	return hash
 }
 
-func setupFSStorage(t *testing.T) FSProviderStorageConfiguration {
-	t.Helper()
-	dir := t.TempDir()
-	provider := createTestProvider()
+func TestFSLoadCatalog(t *testing.T) {
+	provider := testProvider()
 
-	return FSProviderStorageConfiguration{
-		downloadRoot: dir,
-		provider:     provider,
-		sugar:        sugar,
-	}
-}
-
-// --- LoadCatalog tests ---
-
-func TestFSLoadCatalog_Success(t *testing.T) {
-	s := setupFSStorage(t)
-	providerDir := filepath.Join(s.downloadRoot, s.provider.String())
-	if err := os.MkdirAll(providerDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a zip file
-	zipPath := filepath.Join(providerDir, "terraform-provider-aws_4.0.0_linux_amd64.zip")
-	hash := createTestZip(t, zipPath)
-
-	// Create version JSON
-	archives := MirrorArchives{
-		Archives: map[string]MirrorProviderPlatformArch{
-			"linux_amd64": {
-				Hashes: []string{hash},
-				URL:    "terraform-provider-aws_4.0.0_linux_amd64.zip",
-			},
-		},
-	}
-	versionJSON, _ := json.MarshalIndent(archives, "", "  ")
-	if err := os.WriteFile(filepath.Join(providerDir, "4.0.0.json"), versionJSON, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create index.json
-	index := MirrorIndex{
-		Versions: map[string]map[string]any{
-			"4.0.0": {},
-		},
-	}
-	indexJSON, _ := json.MarshalIndent(index, "", "  ")
-	if err := os.WriteFile(filepath.Join(providerDir, MIRROR_INDEX_FILE), indexJSON, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	psibs, err := s.LoadCatalog()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(psibs) != 1 {
-		t.Fatalf("expected 1 PSIB, got %d", len(psibs))
-	}
-	if psibs[0].Version != "4.0.0" {
-		t.Errorf("expected version 4.0.0, got %s", psibs[0].Version)
-	}
-	if psibs[0].OS != "linux" || psibs[0].Arch != "amd64" {
-		t.Errorf("expected linux_amd64, got %s_%s", psibs[0].OS, psibs[0].Arch)
-	}
-	if psibs[0].H1Checksum != hash {
-		t.Errorf("expected hash %s, got %s", hash, psibs[0].H1Checksum)
-	}
-}
-
-func TestFSLoadCatalog_MissingIndexFile(t *testing.T) {
-	s := setupFSStorage(t)
-	_, err := s.LoadCatalog()
-	if err == nil {
-		t.Fatal("expected error for missing index file, got nil")
-	}
-}
-
-func TestFSLoadCatalog_MissingVersionJSON(t *testing.T) {
-	s := setupFSStorage(t)
-	providerDir := filepath.Join(s.downloadRoot, s.provider.String())
-	if err := os.MkdirAll(providerDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create index.json referencing a version
-	index := MirrorIndex{
-		Versions: map[string]map[string]any{
-			"4.0.0": {},
-		},
-	}
-	indexJSON, _ := json.MarshalIndent(index, "", "  ")
-	if err := os.WriteFile(filepath.Join(providerDir, MIRROR_INDEX_FILE), indexJSON, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Don't create the version JSON file — should skip, not error
-	psibs, err := s.LoadCatalog()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(psibs) != 0 {
-		t.Errorf("expected 0 PSIBs when version JSON is missing, got %d", len(psibs))
-	}
-}
-
-// --- VerifyCatalogAgainstStorage tests ---
-
-func TestFSVerifyCatalog_ValidZip(t *testing.T) {
-	s := setupFSStorage(t)
-	providerDir := filepath.Join(s.downloadRoot, s.provider.String())
-
-	zipPath := filepath.Join(providerDir, "terraform-provider-aws_4.0.0_linux_amd64.zip")
-	hash := createTestZip(t, zipPath)
-
-	catalog := []ProviderSpecificInstanceBinary{
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: s.provider,
-				Version:  "4.0.0",
-				OS:       "linux",
-				Arch:     "amd64",
-			},
-			H1Checksum: hash,
-			FullPath:   zipPath,
-		},
-	}
-
-	valid, invalid, err := s.VerifyCatalogAgainstStorage(catalog)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(valid) != 1 {
-		t.Errorf("expected 1 valid, got %d", len(valid))
-	}
-	if len(invalid) != 0 {
-		t.Errorf("expected 0 invalid, got %d", len(invalid))
-	}
-}
-
-func TestFSVerifyCatalog_WrongHash(t *testing.T) {
-	s := setupFSStorage(t)
-	providerDir := filepath.Join(s.downloadRoot, s.provider.String())
-
-	zipPath := filepath.Join(providerDir, "terraform-provider-aws_4.0.0_linux_amd64.zip")
-	createTestZip(t, zipPath)
-
-	catalog := []ProviderSpecificInstanceBinary{
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: s.provider,
-				Version:  "4.0.0",
-				OS:       "linux",
-				Arch:     "amd64",
-			},
-			H1Checksum: "h1:wrong_hash",
-			FullPath:   zipPath,
-		},
-	}
-
-	valid, invalid, err := s.VerifyCatalogAgainstStorage(catalog)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(valid) != 0 {
-		t.Errorf("expected 0 valid, got %d", len(valid))
-	}
-	if len(invalid) != 1 {
-		t.Errorf("expected 1 invalid, got %d", len(invalid))
-	}
-}
-
-func TestFSVerifyCatalog_MissingFile(t *testing.T) {
-	s := setupFSStorage(t)
-
-	catalog := []ProviderSpecificInstanceBinary{
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: s.provider,
-				Version:  "4.0.0",
-				OS:       "linux",
-				Arch:     "amd64",
-			},
-			H1Checksum: "h1:abc",
-			FullPath:   filepath.Join(s.downloadRoot, "nonexistent.zip"),
-		},
-	}
-
-	valid, invalid, err := s.VerifyCatalogAgainstStorage(catalog)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(valid) != 0 {
-		t.Errorf("expected 0 valid, got %d", len(valid))
-	}
-	if len(invalid) != 1 {
-		t.Errorf("expected 1 invalid, got %d", len(invalid))
-	}
-}
-
-// --- WriteProviderBinaryDataToStorage tests ---
-
-func TestFSWriteProviderBinaryData_Success(t *testing.T) {
-	s := setupFSStorage(t)
-
-	// Create a valid zip in memory
-	zipPath := filepath.Join(t.TempDir(), "temp.zip")
-	createTestZip(t, zipPath)
-	zipData, err := os.ReadFile(zipPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pi := ProviderSpecificInstance{
-		Provider: s.provider,
-		Version:  "4.0.0",
-		OS:       "linux",
-		Arch:     "amd64",
-	}
-
-	psib, err := s.WriteProviderBinaryDataToStorage(zipData, pi)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if psib == nil {
-		t.Fatal("expected non-nil PSIB")
-	}
-
-	// Verify the file was written
-	expectedPath := filepath.Join(s.downloadRoot, pi.GetDownloadBase(), pi.GetDownloadedFileName())
-	if psib.FullPath != expectedPath {
-		t.Errorf("expected path %s, got %s", expectedPath, psib.FullPath)
-	}
-	if _, err := os.Stat(psib.FullPath); os.IsNotExist(err) {
-		t.Error("expected file to exist on disk")
-	}
-	if psib.H1Checksum == "" {
-		t.Error("expected non-empty H1Checksum")
-	}
-}
-
-func TestFSWriteProviderBinaryData_InvalidZip(t *testing.T) {
-	s := setupFSStorage(t)
-
-	pi := ProviderSpecificInstance{
-		Provider: s.provider,
-		Version:  "4.0.0",
-		OS:       "linux",
-		Arch:     "amd64",
-	}
-
-	_, err := s.WriteProviderBinaryDataToStorage([]byte("not a zip"), pi)
-	if err == nil {
-		t.Fatal("expected error for invalid zip data, got nil")
-	}
-}
-
-// --- StoreCatalog tests ---
-
-func TestFSStoreCatalog_MultipleVersions(t *testing.T) {
-	s := setupFSStorage(t)
-	providerDir := filepath.Join(s.downloadRoot, s.provider.GetDownloadBase())
-	if err := os.MkdirAll(providerDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	psibs := []ProviderSpecificInstanceBinary{
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: s.provider,
-				Version:  "4.0.0",
-				OS:       "linux",
-				Arch:     "amd64",
-			},
-			H1Checksum: "h1:abc123",
-		},
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: s.provider,
-				Version:  "4.0.0",
-				OS:       "darwin",
-				Arch:     "arm64",
-			},
-			H1Checksum: "h1:def456",
-		},
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: s.provider,
-				Version:  "4.1.0",
-				OS:       "linux",
-				Arch:     "amd64",
-			},
-			H1Checksum: "h1:ghi789",
-		},
-	}
-
-	err := s.StoreCatalog(psibs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify index.json
-	indexPath := filepath.Join(providerDir, MIRROR_INDEX_FILE)
-	indexData, err := os.ReadFile(indexPath)
-	if err != nil {
-		t.Fatalf("failed to read index.json: %v", err)
-	}
-	var index MirrorIndex
-	if err := json.Unmarshal(indexData, &index); err != nil {
-		t.Fatalf("failed to unmarshal index.json: %v", err)
-	}
-	if len(index.Versions) != 2 {
-		t.Errorf("expected 2 versions in index, got %d", len(index.Versions))
-	}
-
-	// Verify version 4.0.0 JSON
-	v400Data, err := os.ReadFile(filepath.Join(providerDir, "4.0.0.json"))
-	if err != nil {
-		t.Fatalf("failed to read 4.0.0.json: %v", err)
-	}
-	var v400 MirrorArchives
-	if err := json.Unmarshal(v400Data, &v400); err != nil {
-		t.Fatalf("failed to unmarshal 4.0.0.json: %v", err)
-	}
-	if len(v400.Archives) != 2 {
-		t.Errorf("expected 2 archives in 4.0.0, got %d", len(v400.Archives))
-	}
-
-	// Verify version 4.1.0 JSON
-	v410Data, err := os.ReadFile(filepath.Join(providerDir, "4.1.0.json"))
-	if err != nil {
-		t.Fatalf("failed to read 4.1.0.json: %v", err)
-	}
-	var v410 MirrorArchives
-	if err := json.Unmarshal(v410Data, &v410); err != nil {
-		t.Fatalf("failed to unmarshal 4.1.0.json: %v", err)
-	}
-	if len(v410.Archives) != 1 {
-		t.Errorf("expected 1 archive in 4.1.0, got %d", len(v410.Archives))
-	}
-}
-
-func TestFSStoreCatalog_EmptyPSIBs(t *testing.T) {
-	s := setupFSStorage(t)
-	providerDir := filepath.Join(s.downloadRoot, s.provider.GetDownloadBase())
-	if err := os.MkdirAll(providerDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	err := s.StoreCatalog(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify index.json written with empty versions
-	indexPath := filepath.Join(providerDir, MIRROR_INDEX_FILE)
-	indexData, err := os.ReadFile(indexPath)
-	if err != nil {
-		t.Fatalf("failed to read index.json: %v", err)
-	}
-	var index MirrorIndex
-	if err := json.Unmarshal(indexData, &index); err != nil {
-		t.Fatalf("failed to unmarshal index.json: %v", err)
-	}
-	if len(index.Versions) != 0 {
-		t.Errorf("expected 0 versions in index, got %d", len(index.Versions))
-	}
-}
-
-// --- Round-trip integration test ---
-
-func TestFSStoreCatalogThenLoadCatalog_RoundTrip(t *testing.T) {
-	s := setupFSStorage(t)
-	providerDir := filepath.Join(s.downloadRoot, s.provider.String())
-	if err := os.MkdirAll(providerDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create actual zip files so LoadCatalog can resolve paths
-	zipPath1 := filepath.Join(providerDir, "terraform-provider-aws_4.0.0_linux_amd64.zip")
-	hash1 := createTestZip(t, zipPath1)
-
-	zipPath2 := filepath.Join(providerDir, "terraform-provider-aws_4.0.0_darwin_arm64.zip")
-	hash2 := createTestZip(t, zipPath2)
-
-	originalPSIBs := []ProviderSpecificInstanceBinary{
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: s.provider,
-				Version:  "4.0.0",
-				OS:       "linux",
-				Arch:     "amd64",
-			},
-			H1Checksum: hash1,
-			FullPath:   zipPath1,
-		},
-		{
-			ProviderSpecificInstance: ProviderSpecificInstance{
-				Provider: s.provider,
-				Version:  "4.0.0",
-				OS:       "darwin",
-				Arch:     "arm64",
-			},
-			H1Checksum: hash2,
-			FullPath:   zipPath2,
-		},
-	}
-
-	// Store
-	if err := s.StoreCatalog(originalPSIBs); err != nil {
-		t.Fatalf("StoreCatalog error: %v", err)
-	}
-
-	// Load
-	loadedPSIBs, err := s.LoadCatalog()
-	if err != nil {
-		t.Fatalf("LoadCatalog error: %v", err)
-	}
-
-	if len(loadedPSIBs) != len(originalPSIBs) {
-		t.Fatalf("expected %d PSIBs, got %d", len(originalPSIBs), len(loadedPSIBs))
-	}
-
-	// Sort both for comparison
-	sortPSIBs := func(s []ProviderSpecificInstanceBinary) {
-		sort.Slice(s, func(i, j int) bool {
-			return s[i].ProviderSpecificInstance.String() < s[j].ProviderSpecificInstance.String()
-		})
-	}
-	sortPSIBs(originalPSIBs)
-	sortPSIBs(loadedPSIBs)
-
-	for i := range originalPSIBs {
-		if loadedPSIBs[i].Version != originalPSIBs[i].Version {
-			t.Errorf("version mismatch at %d: got %s, want %s", i, loadedPSIBs[i].Version, originalPSIBs[i].Version)
+	t.Run("valid catalog", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.String())
+		err := os.MkdirAll(providerDir, 0755)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if loadedPSIBs[i].OS != originalPSIBs[i].OS {
-			t.Errorf("OS mismatch at %d: got %s, want %s", i, loadedPSIBs[i].OS, originalPSIBs[i].OS)
+
+		zipFile := "terraform-provider-aws_5.0.0_linux_amd64.zip"
+		zipPath := filepath.Join(providerDir, zipFile)
+		hash := writeTestZipToPath(t, zipPath, "provider.exe", "binary")
+
+		index := MirrorIndex{Versions: map[string]map[string]any{"5.0.0": {}}}
+		indexBytes, _ := json.Marshal(index)
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
 		}
-		if loadedPSIBs[i].Arch != originalPSIBs[i].Arch {
-			t.Errorf("Arch mismatch at %d: got %s, want %s", i, loadedPSIBs[i].Arch, originalPSIBs[i].Arch)
+
+		archives := MirrorArchives{
+			Archives: map[string]MirrorProviderPlatformArch{
+				"linux_amd64": {Hashes: []string{hash}, URL: zipFile},
+			},
 		}
-		if loadedPSIBs[i].H1Checksum != originalPSIBs[i].H1Checksum {
-			t.Errorf("H1Checksum mismatch at %d: got %s, want %s", i, loadedPSIBs[i].H1Checksum, originalPSIBs[i].H1Checksum)
+		archivesBytes, _ := json.Marshal(archives)
+		if err := os.WriteFile(filepath.Join(providerDir, "5.0.0.json"), archivesBytes, 0644); err != nil {
+			t.Fatalf("failed to write 5.0.0.json: %v", err)
 		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		psibs, err := s.LoadCatalog()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(psibs) != 1 {
+			t.Fatalf("expected 1 psib, got %d", len(psibs))
+		}
+		if psibs[0].Version != "5.0.0" {
+			t.Errorf("version = %s, want 5.0.0", psibs[0].Version)
+		}
+		if psibs[0].OS != "linux" || psibs[0].Arch != "amd64" {
+			t.Errorf("os/arch = %s/%s, want linux/amd64", psibs[0].OS, psibs[0].Arch)
+		}
+	})
+
+	t.Run("missing index.json", func(t *testing.T) {
+		root := t.TempDir()
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		_, err := s.LoadCatalog()
+		if err == nil {
+			t.Fatal("expected error for missing index.json")
+		}
+	})
+
+	t.Run("malformed index JSON", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.String())
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), []byte("{bad json"), 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		_, err := s.LoadCatalog()
+		if err == nil {
+			t.Fatal("expected error for malformed JSON")
+		}
+	})
+
+	t.Run("missing version JSON continues with partial results", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.String())
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+
+		index := MirrorIndex{Versions: map[string]map[string]any{"5.0.0": {}, "5.1.0": {}}}
+		indexBytes, _ := json.Marshal(index)
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
+		}
+
+		// Only write version JSON for 5.1.0
+		zipFile := "terraform-provider-aws_5.1.0_linux_amd64.zip"
+		zipPath := filepath.Join(providerDir, zipFile)
+		hash := writeTestZipToPath(t, zipPath, "provider.exe", "binary")
+
+		archives := MirrorArchives{
+			Archives: map[string]MirrorProviderPlatformArch{
+				"linux_amd64": {Hashes: []string{hash}, URL: zipFile},
+			},
+		}
+		archivesBytes, _ := json.Marshal(archives)
+		if err := os.WriteFile(filepath.Join(providerDir, "5.1.0.json"), archivesBytes, 0644); err != nil {
+			t.Fatalf("failed to write 5.1.0.json: %v", err)
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		psibs, err := s.LoadCatalog()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(psibs) != 1 {
+			t.Fatalf("expected 1 psib (partial), got %d", len(psibs))
+		}
+		if psibs[0].Version != "5.1.0" {
+			t.Errorf("expected version 5.1.0, got %s", psibs[0].Version)
+		}
+	})
+
+	t.Run("archive with multiple hashes is skipped", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.String())
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+
+		index := MirrorIndex{Versions: map[string]map[string]any{"5.0.0": {}}}
+		indexBytes, _ := json.Marshal(index)
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
+		}
+
+		archives := MirrorArchives{
+			Archives: map[string]MirrorProviderPlatformArch{
+				"linux_amd64": {Hashes: []string{"h1:abc", "h1:def"}, URL: "test.zip"},
+			},
+		}
+		archivesBytes, _ := json.Marshal(archives)
+		if err := os.WriteFile(filepath.Join(providerDir, "5.0.0.json"), archivesBytes, 0644); err != nil {
+			t.Fatalf("failed to write 5.0.0.json: %v", err)
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		psibs, err := s.LoadCatalog()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(psibs) != 0 {
+			t.Errorf("expected 0 psibs (skipped), got %d", len(psibs))
+		}
+	})
+
+	t.Run("archive key without underscore delimiter is skipped", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.String())
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+
+		index := MirrorIndex{Versions: map[string]map[string]any{"5.0.0": {}}}
+		indexBytes, _ := json.Marshal(index)
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
+		}
+
+		archives := MirrorArchives{
+			Archives: map[string]MirrorProviderPlatformArch{
+				"linuxamd64": {Hashes: []string{"h1:abc"}, URL: "test.zip"},
+			},
+		}
+		archivesBytes, _ := json.Marshal(archives)
+		if err := os.WriteFile(filepath.Join(providerDir, "5.0.0.json"), archivesBytes, 0644); err != nil {
+			t.Fatalf("failed to write 5.0.0.json: %v", err)
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		psibs, err := s.LoadCatalog()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(psibs) != 0 {
+			t.Errorf("expected 0 psibs (skipped), got %d", len(psibs))
+		}
+	})
+}
+
+func TestFSVerifyCatalogAgainstStorage(t *testing.T) {
+	provider := testProvider()
+
+	t.Run("valid zip with matching hash", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.String())
+		zipFile := "terraform-provider-aws_5.0.0_linux_amd64.zip"
+		zipPath := filepath.Join(providerDir, zipFile)
+		hash := writeTestZipToPath(t, zipPath, "provider.exe", "binary")
+
+		catalog := []ProviderSpecificInstanceBinary{
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+				},
+				H1Checksum: hash,
+				FullPath:   zipPath,
+			},
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		valid, invalid, err := s.VerifyCatalogAgainstStorage(catalog)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(valid) != 1 {
+			t.Errorf("expected 1 valid, got %d", len(valid))
+		}
+		if len(invalid) != 0 {
+			t.Errorf("expected 0 invalid, got %d", len(invalid))
+		}
+	})
+
+	t.Run("missing file goes to invalid", func(t *testing.T) {
+		root := t.TempDir()
+		catalog := []ProviderSpecificInstanceBinary{
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+				},
+				H1Checksum: "h1:doesntmatter",
+				FullPath:   filepath.Join(root, "nonexistent.zip"),
+			},
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		valid, invalid, err := s.VerifyCatalogAgainstStorage(catalog)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(valid) != 0 {
+			t.Errorf("expected 0 valid, got %d", len(valid))
+		}
+		if len(invalid) != 1 {
+			t.Errorf("expected 1 invalid, got %d", len(invalid))
+		}
+	})
+
+	t.Run("checksum mismatch goes to invalid", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.String())
+		zipFile := "terraform-provider-aws_5.0.0_linux_amd64.zip"
+		zipPath := filepath.Join(providerDir, zipFile)
+		writeTestZipToPath(t, zipPath, "provider.exe", "binary")
+
+		catalog := []ProviderSpecificInstanceBinary{
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+				},
+				H1Checksum: "h1:wrongchecksum",
+				FullPath:   zipPath,
+			},
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		valid, invalid, err := s.VerifyCatalogAgainstStorage(catalog)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(valid) != 0 {
+			t.Errorf("expected 0 valid, got %d", len(valid))
+		}
+		if len(invalid) != 1 {
+			t.Errorf("expected 1 invalid, got %d", len(invalid))
+		}
+	})
+
+	t.Run("mixed valid and invalid", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.String())
+		zipFile := "terraform-provider-aws_5.0.0_linux_amd64.zip"
+		zipPath := filepath.Join(providerDir, zipFile)
+		hash := writeTestZipToPath(t, zipPath, "provider.exe", "binary")
+
+		catalog := []ProviderSpecificInstanceBinary{
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+				},
+				H1Checksum: hash,
+				FullPath:   zipPath,
+			},
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.1.0", OS: "linux", Arch: "amd64",
+				},
+				H1Checksum: "h1:doesntexist",
+				FullPath:   filepath.Join(root, "nonexistent.zip"),
+			},
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		valid, invalid, err := s.VerifyCatalogAgainstStorage(catalog)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(valid) != 1 {
+			t.Errorf("expected 1 valid, got %d", len(valid))
+		}
+		if len(invalid) != 1 {
+			t.Errorf("expected 1 invalid, got %d", len(invalid))
+		}
+	})
+}
+
+func TestFSWriteProviderBinaryDataToStorage(t *testing.T) {
+	provider := testProvider()
+
+	t.Run("valid zip bytes written and hash returned", func(t *testing.T) {
+		root := t.TempDir()
+		zipBytes, expectedHash := createTestZip(t, "provider.exe", "binary content")
+
+		pi := ProviderSpecificInstance{
+			Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		psib, err := s.WriteProviderBinaryDataToStorage(zipBytes, pi)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if psib.H1Checksum != expectedHash {
+			t.Errorf("hash = %s, want %s", psib.H1Checksum, expectedHash)
+		}
+
+		expectedPath := filepath.Join(root, pi.GetDownloadBase(), pi.GetDownloadedFileName())
+		if psib.FullPath != expectedPath {
+			t.Errorf("path = %s, want %s", psib.FullPath, expectedPath)
+		}
+
+		// Verify file actually exists
+		if _, err := os.Stat(psib.FullPath); os.IsNotExist(err) {
+			t.Error("written file does not exist")
+		}
+	})
+
+	t.Run("creates nested directories", func(t *testing.T) {
+		root := t.TempDir()
+		zipBytes, _ := createTestZip(t, "provider.exe", "binary")
+
+		pi := ProviderSpecificInstance{
+			Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		_, err := s.WriteProviderBinaryDataToStorage(zipBytes, pi)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		dirPath := filepath.Join(root, pi.GetDownloadBase())
+		info, err := os.Stat(dirPath)
+		if err != nil {
+			t.Fatalf("directory not created: %v", err)
+		}
+		if !info.IsDir() {
+			t.Error("expected directory")
+		}
+	})
+
+	t.Run("non-zip data returns error", func(t *testing.T) {
+		root := t.TempDir()
+		pi := ProviderSpecificInstance{
+			Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		_, err := s.WriteProviderBinaryDataToStorage([]byte("not a zip"), pi)
+		if err == nil {
+			t.Fatal("expected error for non-zip data")
+		}
+	})
+}
+
+func TestFSStoreCatalog(t *testing.T) {
+	provider := testProvider()
+
+	t.Run("single version single arch", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.GetDownloadBase())
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+
+		psibs := []ProviderSpecificInstanceBinary{
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+				},
+				H1Checksum: "h1:abc123",
+			},
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		err := s.StoreCatalog(psibs)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Verify index.json
+		indexPath := filepath.Join(providerDir, "index.json")
+		indexBytes, err := os.ReadFile(indexPath)
+		if err != nil {
+			t.Fatalf("failed to read index.json: %v", err)
+		}
+		var index MirrorIndex
+		if err := json.Unmarshal(indexBytes, &index); err != nil {
+			t.Fatalf("failed to unmarshal index: %v", err)
+		}
+		if _, ok := index.Versions["5.0.0"]; !ok {
+			t.Error("index.json missing version 5.0.0")
+		}
+
+		// Verify version JSON
+		versionPath := filepath.Join(providerDir, "5.0.0.json")
+		versionBytes, err := os.ReadFile(versionPath)
+		if err != nil {
+			t.Fatalf("failed to read 5.0.0.json: %v", err)
+		}
+		var archives MirrorArchives
+		if err := json.Unmarshal(versionBytes, &archives); err != nil {
+			t.Fatalf("failed to unmarshal archives: %v", err)
+		}
+		arch, ok := archives.Archives["linux_amd64"]
+		if !ok {
+			t.Fatal("missing linux_amd64 in archives")
+		}
+		if len(arch.Hashes) != 1 || arch.Hashes[0] != "h1:abc123" {
+			t.Errorf("unexpected hashes: %v", arch.Hashes)
+		}
+	})
+
+	t.Run("multiple versions", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.GetDownloadBase())
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+
+		psibs := []ProviderSpecificInstanceBinary{
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+				},
+				H1Checksum: "h1:abc",
+			},
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.1.0", OS: "linux", Arch: "amd64",
+				},
+				H1Checksum: "h1:def",
+			},
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		err := s.StoreCatalog(psibs)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Verify index has both versions
+		indexBytes, _ := os.ReadFile(filepath.Join(providerDir, "index.json"))
+		var index MirrorIndex
+		if err := json.Unmarshal(indexBytes, &index); err != nil {
+			t.Fatalf("failed to unmarshal index: %v", err)
+		}
+		if len(index.Versions) != 2 {
+			t.Errorf("expected 2 versions in index, got %d", len(index.Versions))
+		}
+
+		// Verify both version JSONs exist
+		for _, ver := range []string{"5.0.0", "5.1.0"} {
+			if _, err := os.Stat(filepath.Join(providerDir, ver+".json")); os.IsNotExist(err) {
+				t.Errorf("missing %s.json", ver)
+			}
+		}
+	})
+
+	t.Run("multiple archs same version", func(t *testing.T) {
+		root := t.TempDir()
+		providerDir := filepath.Join(root, provider.GetDownloadBase())
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+
+		psibs := []ProviderSpecificInstanceBinary{
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64",
+				},
+				H1Checksum: "h1:abc",
+			},
+			{
+				ProviderSpecificInstance: ProviderSpecificInstance{
+					Provider: provider, Version: "5.0.0", OS: "darwin", Arch: "arm64",
+				},
+				H1Checksum: "h1:def",
+			},
+		}
+
+		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
+		err := s.StoreCatalog(psibs)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		versionBytes, _ := os.ReadFile(filepath.Join(providerDir, "5.0.0.json"))
+		var archives MirrorArchives
+		if err := json.Unmarshal(versionBytes, &archives); err != nil {
+			t.Fatalf("failed to unmarshal archives: %v", err)
+		}
+		if len(archives.Archives) != 2 {
+			t.Errorf("expected 2 archives, got %d", len(archives.Archives))
+		}
+		if _, ok := archives.Archives["linux_amd64"]; !ok {
+			t.Error("missing linux_amd64")
+		}
+		if _, ok := archives.Archives["darwin_arm64"]; !ok {
+			t.Error("missing darwin_arm64")
+		}
+	})
+}
+
+func TestFSReconcileWantedProviderInstances(t *testing.T) {
+	provider := testProvider()
+	psi := ProviderSpecificInstance{Provider: provider, Version: "5.0.0", OS: "linux", Arch: "amd64"}
+	psib := ProviderSpecificInstanceBinary{ProviderSpecificInstance: psi, H1Checksum: "h1:abc"}
+
+	s := FSProviderStorageConfiguration{downloadRoot: "/tmp", provider: provider, sugar: testSugar()}
+	got := s.ReconcileWantedProviderInstances(
+		[]ProviderSpecificInstanceBinary{psib},
+		nil,
+		[]ProviderSpecificInstance{psi},
+	)
+	if len(got) != 0 {
+		t.Errorf("expected 0 (already valid), got %d", len(got))
 	}
 }

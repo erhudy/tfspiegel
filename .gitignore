@@ -1,5 +1,7 @@
 tfspiegel
+*.exe
 .vscode
+.claude
 dev-env
 config.json
 config.yaml

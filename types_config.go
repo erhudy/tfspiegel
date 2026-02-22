@@ -4,6 +4,7 @@ package main
 type ProviderMirrorConfiguration struct {
 	Reference    string                 `json:"reference" yaml:"reference"`
 	VersionRange string                 `json:"version_range" yaml:"version_range"`
+	SkipVersions []string               `json:"skip_versions" yaml:"skip_versions"`
 	OSArchs      []HCTFProviderPlatform `json:"os_archs" yaml:"os_archs"`
 }
 

@@ -18,6 +18,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var sugar *zap.SugaredLogger
+
 func main() {
 	var configPath string
 	var loggerType string
@@ -31,21 +33,32 @@ func main() {
 	flag.Parse()
 
 	if !StringInSlice(loggerType, []string{"development", "production"}) {
-		panic(fmt.Errorf("%s is not a valid logger type", loggerType))
+		fmt.Fprintf(os.Stderr, "%s is not a valid logger type\n", loggerType)
+		os.Exit(1)
 	}
 
 	config, err := LoadConfig(configPath)
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
 	}
 
 	var logger *zap.Logger
-	if loggerType == "development" {
-		logger, _ = zap.NewDevelopment()
-	} else if loggerType == "production" {
-		logger, _ = zap.NewProduction()
+	switch loggerType {
+	case "development":
+		logger, err = zap.NewDevelopment()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error initializing development logger: %v\n", err)
+			os.Exit(1)
+		}
+	case "production":
+		logger, err = zap.NewProduction()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error initializing production logger: %v\n", err)
+			os.Exit(1)
+		}
 	}
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	sugar = logger.Sugar()
 
@@ -53,7 +66,8 @@ func main() {
 		for {
 			err = MirrorProvidersWithConfig(config, logger)
 			if err != nil {
-				panic(err)
+				fmt.Fprintf(os.Stderr, "error mirroring providers: %v\n", err)
+				os.Exit(1)
 			}
 			sugar.Infof("sleeping %s until next loop", waitBetweenLoops)
 			time.Sleep(waitBetweenLoops)
@@ -61,7 +75,8 @@ func main() {
 	} else {
 		err = MirrorProvidersWithConfig(config, logger)
 		if err != nil {
-			panic(err)
+			fmt.Fprintf(os.Stderr, "error mirroring providers: %v\n", err)
+			os.Exit(1)
 		}
 	}
 }
@@ -100,21 +115,16 @@ func LoadConfig(configPath string) (config Configuration, err error) {
 }
 
 func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
-	sugar = logger.Sugar()
-
-	var mirrorIndex MirrorIndex
-	mirrorIndex.Versions = make(map[string]map[string]interface{})
-
 	// loop through all requested provider mirror stanzas in the config and mirror each provider set one at a time
 	for _, configProvider := range config.Providers {
 		provider, err := NewProviderFromConfigProvider(configProvider.Reference)
 		if err != nil {
-			sugar.Errorf("error creating provider for %#v: %w", configProvider, err)
+			sugar.Errorf("error creating provider for %#v: %v", configProvider, err)
 			continue
 		}
 		providerMetadata, err := provider.GetProviderMetadataFromRegistry()
 		if err != nil {
-			sugar.Errorf("error getting metadata from remote registry for provider %s: %w", provider, err)
+			sugar.Errorf("error getting metadata from remote registry for provider %s: %v", provider, err)
 			continue
 		}
 
@@ -124,16 +134,17 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 			sugar.Warnf("provider %s does not have OS/archs set, using current platform (%s/%s) as defaults", provider, runtime.GOOS, runtime.GOARCH)
 		}
 
-		wantedProviderVersionedInstances, err := provider.FilterToWantedPVIs(providerMetadata, configProvider.VersionRange, osarchs)
+		wantedProviderVersionedInstances, err := provider.FilterToWantedPVIs(providerMetadata, configProvider, osarchs)
 		if err != nil {
-			sugar.Errorf("error fetching wanted provider version instances for provider %s: %w", provider, err)
+			sugar.Errorf("error fetching wanted provider version instances for provider %s: %v", provider, err)
 			continue
 		}
 
 		var pvisToDownload []ProviderSpecificInstance
 		var d ProviderDownloader
 
-		if config.DownloadDestination.Type == STORAGE_TYPE_FS {
+		switch config.DownloadDestination.Type {
+		case STORAGE_TYPE_FS:
 			d = ProviderDownloader{
 				Storage: FSProviderStorageConfiguration{
 					downloadRoot:            config.DownloadDestination.FSConfig.DownloadRoot,
@@ -142,29 +153,25 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 					wantedProviderInstances: wantedProviderVersionedInstances,
 				},
 			}
-		} else if config.DownloadDestination.Type == STORAGE_TYPE_S3 {
+		case STORAGE_TYPE_S3:
 			ctx := context.Background()
 			awscfg, err := awsconfig.LoadDefaultConfig(ctx)
 			if err != nil {
 				return err
 			}
-			if config.DownloadDestination.S3Config.Endpoint != "" {
-				const defaultRegion = "us-east-1"
-				staticResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-					return aws.Endpoint{
-						PartitionID:       "aws",
-						URL:               config.DownloadDestination.S3Config.Endpoint,
-						SigningRegion:     defaultRegion,
-						HostnameImmutable: true,
-					}, nil
-				})
-
-				awscfg.Region = defaultRegion
-				awscfg.EndpointResolverWithOptions = staticResolver
-			}
 			prefix := config.DownloadDestination.S3Config.Prefix
 
-			s3client := awss3.NewFromConfig(awscfg)
+			var s3opts []func(*awss3.Options)
+			if config.DownloadDestination.S3Config.Endpoint != "" {
+				const defaultRegion = "us-east-1"
+				awscfg.Region = defaultRegion
+				endpoint := config.DownloadDestination.S3Config.Endpoint
+				s3opts = append(s3opts, func(o *awss3.Options) {
+					o.BaseEndpoint = aws.String(endpoint)
+					o.UsePathStyle = true
+				})
+			}
+			s3client := awss3.NewFromConfig(awscfg, s3opts...)
 
 			d = ProviderDownloader{
 				Storage: S3ProviderStorageConfiguration{
@@ -182,27 +189,24 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 		var valid []ProviderSpecificInstanceBinary
 		var invalid []ProviderSpecificInstanceBinary
 
-		gotError := false
-		if err == nil {
-			valid, invalid, err = d.Storage.VerifyCatalogAgainstStorage(catalogContents)
-			if err != nil {
-				gotError = true
-			}
-		} else {
-			gotError = true
-		}
-
-		if gotError {
-			sugar.Errorf("error loading catalog for provider %s: %w", provider, err)
+		if err != nil {
+			sugar.Errorf("error loading catalog for provider %s: %v", provider, err)
 			sugar.Infof("initializing provider %s as fresh", provider)
 			pvisToDownload = wantedProviderVersionedInstances
 		} else {
-			pvisToDownload = d.Storage.ReconcileWantedProviderInstances(valid, invalid, wantedProviderVersionedInstances)
+			valid, invalid, err = d.Storage.VerifyCatalogAgainstStorage(catalogContents)
+			if err != nil {
+				sugar.Errorf("error verifying catalog against storage for provider %s: %v", provider, err)
+				sugar.Infof("initializing provider %s as fresh", provider)
+				pvisToDownload = wantedProviderVersionedInstances
+			} else {
+				pvisToDownload = d.Storage.ReconcileWantedProviderInstances(valid, invalid, wantedProviderVersionedInstances)
+			}
 		}
 
 		marshalled, err := json.MarshalIndent(pvisToDownload, "", "  ")
 		if err != nil {
-			sugar.Errorf("error marshalling provider instances to download for provider %s: %w", provider, err)
+			sugar.Errorf("error marshalling provider instances to download for provider %s: %v", provider, err)
 			continue
 		}
 		if len(pvisToDownload) > 0 {
@@ -219,7 +223,7 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 		for _, pvi := range pvisToDownload {
 			psib, err := d.MirrorProviderInstanceToDest(pvi)
 			if err != nil {
-				sugar.Errorf("error mirroring provider instance %s: %w", pvi, err)
+				sugar.Errorf("error mirroring provider instance %s: %v", pvi, err)
 				failedPvis = append(failedPvis, pvi)
 				continue
 			}
@@ -230,7 +234,7 @@ func MirrorProvidersWithConfig(config Configuration, logger *zap.Logger) error {
 
 		err = d.Storage.StoreCatalog(finalPsibs)
 		if err != nil {
-			sugar.Errorf("error writing catalog for provider %s: %w", provider, err)
+			sugar.Errorf("error writing catalog for provider %s: %v", provider, err)
 			continue
 		}
 	}

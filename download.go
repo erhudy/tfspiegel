@@ -24,7 +24,7 @@ func (pp HCTFProviderPlatform) String() string {
 func (d *ProviderDownloader) MirrorProviderInstanceToDest(pi ProviderSpecificInstance) (psib *ProviderSpecificInstanceBinary, err error) {
 	sugar.Infof("mirroring PVI %s", pi)
 
-	downloadResponseUrl := fmt.Sprintf("%s://%s/v1/providers/%s/%s/%s/download/%s/%s", registryScheme, pi.Hostname, pi.Owner, pi.Name, pi.Version, pi.OS, pi.Arch)
+	downloadResponseUrl := fmt.Sprintf("https://%s/v1/providers/%s/%s/%s/download/%s/%s", pi.Hostname, pi.Owner, pi.Name, pi.Version, pi.OS, pi.Arch)
 
 	retries := 0
 	maxRetries := 5

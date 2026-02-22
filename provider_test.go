@@ -146,7 +146,7 @@ func TestGetProviderMetadataFromRegistry(t *testing.T) {
 				w.WriteHeader(tt.statusCode)
 				if tt.body != nil {
 					b, _ := json.Marshal(tt.body)
-					w.Write(b)
+					_, _ = w.Write(b)
 				}
 			}))
 			defer server.Close()
@@ -179,7 +179,7 @@ func TestGetProviderMetadataFromRegistry(t *testing.T) {
 func TestGetProviderMetadataFromRegistryInvalidJSON(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		fmt.Fprint(w, "not json at all{{{")
+		_, _ = fmt.Fprint(w, "not json at all{{{")
 	}))
 	defer server.Close()
 

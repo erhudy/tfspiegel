@@ -88,7 +88,9 @@ func TestFSLoadCatalog(t *testing.T) {
 
 		index := MirrorIndex{Versions: map[string]map[string]any{"5.0.0": {}}}
 		indexBytes, _ := json.Marshal(index)
-		os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644)
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
+		}
 
 		archives := MirrorArchives{
 			Archives: map[string]MirrorProviderPlatformArch{
@@ -96,7 +98,9 @@ func TestFSLoadCatalog(t *testing.T) {
 			},
 		}
 		archivesBytes, _ := json.Marshal(archives)
-		os.WriteFile(filepath.Join(providerDir, "5.0.0.json"), archivesBytes, 0644)
+		if err := os.WriteFile(filepath.Join(providerDir, "5.0.0.json"), archivesBytes, 0644); err != nil {
+			t.Fatalf("failed to write 5.0.0.json: %v", err)
+		}
 
 		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
 		psibs, err := s.LoadCatalog()
@@ -126,8 +130,12 @@ func TestFSLoadCatalog(t *testing.T) {
 	t.Run("malformed index JSON", func(t *testing.T) {
 		root := t.TempDir()
 		providerDir := filepath.Join(root, provider.String())
-		os.MkdirAll(providerDir, 0755)
-		os.WriteFile(filepath.Join(providerDir, "index.json"), []byte("{bad json"), 0644)
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), []byte("{bad json"), 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
+		}
 
 		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
 		_, err := s.LoadCatalog()
@@ -139,11 +147,15 @@ func TestFSLoadCatalog(t *testing.T) {
 	t.Run("missing version JSON continues with partial results", func(t *testing.T) {
 		root := t.TempDir()
 		providerDir := filepath.Join(root, provider.String())
-		os.MkdirAll(providerDir, 0755)
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
 
 		index := MirrorIndex{Versions: map[string]map[string]any{"5.0.0": {}, "5.1.0": {}}}
 		indexBytes, _ := json.Marshal(index)
-		os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644)
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
+		}
 
 		// Only write version JSON for 5.1.0
 		zipFile := "terraform-provider-aws_5.1.0_linux_amd64.zip"
@@ -156,7 +168,9 @@ func TestFSLoadCatalog(t *testing.T) {
 			},
 		}
 		archivesBytes, _ := json.Marshal(archives)
-		os.WriteFile(filepath.Join(providerDir, "5.1.0.json"), archivesBytes, 0644)
+		if err := os.WriteFile(filepath.Join(providerDir, "5.1.0.json"), archivesBytes, 0644); err != nil {
+			t.Fatalf("failed to write 5.1.0.json: %v", err)
+		}
 
 		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
 		psibs, err := s.LoadCatalog()
@@ -174,11 +188,15 @@ func TestFSLoadCatalog(t *testing.T) {
 	t.Run("archive with multiple hashes is skipped", func(t *testing.T) {
 		root := t.TempDir()
 		providerDir := filepath.Join(root, provider.String())
-		os.MkdirAll(providerDir, 0755)
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
 
 		index := MirrorIndex{Versions: map[string]map[string]any{"5.0.0": {}}}
 		indexBytes, _ := json.Marshal(index)
-		os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644)
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
+		}
 
 		archives := MirrorArchives{
 			Archives: map[string]MirrorProviderPlatformArch{
@@ -186,7 +204,9 @@ func TestFSLoadCatalog(t *testing.T) {
 			},
 		}
 		archivesBytes, _ := json.Marshal(archives)
-		os.WriteFile(filepath.Join(providerDir, "5.0.0.json"), archivesBytes, 0644)
+		if err := os.WriteFile(filepath.Join(providerDir, "5.0.0.json"), archivesBytes, 0644); err != nil {
+			t.Fatalf("failed to write 5.0.0.json: %v", err)
+		}
 
 		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
 		psibs, err := s.LoadCatalog()
@@ -201,11 +221,15 @@ func TestFSLoadCatalog(t *testing.T) {
 	t.Run("archive key without underscore delimiter is skipped", func(t *testing.T) {
 		root := t.TempDir()
 		providerDir := filepath.Join(root, provider.String())
-		os.MkdirAll(providerDir, 0755)
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
 
 		index := MirrorIndex{Versions: map[string]map[string]any{"5.0.0": {}}}
 		indexBytes, _ := json.Marshal(index)
-		os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644)
+		if err := os.WriteFile(filepath.Join(providerDir, "index.json"), indexBytes, 0644); err != nil {
+			t.Fatalf("failed to write index.json: %v", err)
+		}
 
 		archives := MirrorArchives{
 			Archives: map[string]MirrorProviderPlatformArch{
@@ -213,7 +237,9 @@ func TestFSLoadCatalog(t *testing.T) {
 			},
 		}
 		archivesBytes, _ := json.Marshal(archives)
-		os.WriteFile(filepath.Join(providerDir, "5.0.0.json"), archivesBytes, 0644)
+		if err := os.WriteFile(filepath.Join(providerDir, "5.0.0.json"), archivesBytes, 0644); err != nil {
+			t.Fatalf("failed to write 5.0.0.json: %v", err)
+		}
 
 		s := FSProviderStorageConfiguration{downloadRoot: root, provider: provider, sugar: testSugar()}
 		psibs, err := s.LoadCatalog()
@@ -427,7 +453,9 @@ func TestFSStoreCatalog(t *testing.T) {
 	t.Run("single version single arch", func(t *testing.T) {
 		root := t.TempDir()
 		providerDir := filepath.Join(root, provider.GetDownloadBase())
-		os.MkdirAll(providerDir, 0755)
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
 
 		psibs := []ProviderSpecificInstanceBinary{
 			{
@@ -451,7 +479,9 @@ func TestFSStoreCatalog(t *testing.T) {
 			t.Fatalf("failed to read index.json: %v", err)
 		}
 		var index MirrorIndex
-		json.Unmarshal(indexBytes, &index)
+		if err := json.Unmarshal(indexBytes, &index); err != nil {
+			t.Fatalf("failed to unmarshal index: %v", err)
+		}
 		if _, ok := index.Versions["5.0.0"]; !ok {
 			t.Error("index.json missing version 5.0.0")
 		}
@@ -463,7 +493,9 @@ func TestFSStoreCatalog(t *testing.T) {
 			t.Fatalf("failed to read 5.0.0.json: %v", err)
 		}
 		var archives MirrorArchives
-		json.Unmarshal(versionBytes, &archives)
+		if err := json.Unmarshal(versionBytes, &archives); err != nil {
+			t.Fatalf("failed to unmarshal archives: %v", err)
+		}
 		arch, ok := archives.Archives["linux_amd64"]
 		if !ok {
 			t.Fatal("missing linux_amd64 in archives")
@@ -476,7 +508,9 @@ func TestFSStoreCatalog(t *testing.T) {
 	t.Run("multiple versions", func(t *testing.T) {
 		root := t.TempDir()
 		providerDir := filepath.Join(root, provider.GetDownloadBase())
-		os.MkdirAll(providerDir, 0755)
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
 
 		psibs := []ProviderSpecificInstanceBinary{
 			{
@@ -502,7 +536,9 @@ func TestFSStoreCatalog(t *testing.T) {
 		// Verify index has both versions
 		indexBytes, _ := os.ReadFile(filepath.Join(providerDir, "index.json"))
 		var index MirrorIndex
-		json.Unmarshal(indexBytes, &index)
+		if err := json.Unmarshal(indexBytes, &index); err != nil {
+			t.Fatalf("failed to unmarshal index: %v", err)
+		}
 		if len(index.Versions) != 2 {
 			t.Errorf("expected 2 versions in index, got %d", len(index.Versions))
 		}
@@ -518,7 +554,9 @@ func TestFSStoreCatalog(t *testing.T) {
 	t.Run("multiple archs same version", func(t *testing.T) {
 		root := t.TempDir()
 		providerDir := filepath.Join(root, provider.GetDownloadBase())
-		os.MkdirAll(providerDir, 0755)
+		if err := os.MkdirAll(providerDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
 
 		psibs := []ProviderSpecificInstanceBinary{
 			{
@@ -543,7 +581,9 @@ func TestFSStoreCatalog(t *testing.T) {
 
 		versionBytes, _ := os.ReadFile(filepath.Join(providerDir, "5.0.0.json"))
 		var archives MirrorArchives
-		json.Unmarshal(versionBytes, &archives)
+		if err := json.Unmarshal(versionBytes, &archives); err != nil {
+			t.Fatalf("failed to unmarshal archives: %v", err)
+		}
 		if len(archives.Archives) != 2 {
 			t.Errorf("expected 2 archives, got %d", len(archives.Archives))
 		}

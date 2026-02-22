@@ -121,15 +121,15 @@ func TestMirrorProviderInstanceToDest(t *testing.T) {
 
 	t.Run("successful download on first attempt", func(t *testing.T) {
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case r.URL.Path == "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
+			switch r.URL.Path {
+			case "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
 				resp := HCTFRegistryDownloadResponse{
 					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
 					Shasum:      testSHA,
 				}
-				json.NewEncoder(w).Encode(resp)
-			case r.URL.Path == "/download/aws.zip":
-				w.Write(testBinary)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/download/aws.zip":
+				_, _ = w.Write(testBinary)
 			default:
 				w.WriteHeader(404)
 			}
@@ -198,7 +198,7 @@ func TestMirrorProviderInstanceToDest(t *testing.T) {
 					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
 					Shasum:      testSHA,
 				}
-				json.NewEncoder(w).Encode(resp)
+				_ = json.NewEncoder(w).Encode(resp)
 			} else {
 				w.WriteHeader(404)
 			}
@@ -226,15 +226,15 @@ func TestMirrorProviderInstanceToDest(t *testing.T) {
 
 	t.Run("SHA256 checksum mismatch", func(t *testing.T) {
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case r.URL.Path == "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
+			switch r.URL.Path {
+			case "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
 				resp := HCTFRegistryDownloadResponse{
 					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
 					Shasum:      "0000000000000000000000000000000000000000000000000000000000000000",
 				}
-				json.NewEncoder(w).Encode(resp)
-			case r.URL.Path == "/download/aws.zip":
-				w.Write(testBinary)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/download/aws.zip":
+				_, _ = w.Write(testBinary)
 			default:
 				w.WriteHeader(404)
 			}
@@ -262,15 +262,15 @@ func TestMirrorProviderInstanceToDest(t *testing.T) {
 
 	t.Run("storage write failure", func(t *testing.T) {
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case r.URL.Path == "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
+			switch r.URL.Path {
+			case "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
 				resp := HCTFRegistryDownloadResponse{
 					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
 					Shasum:      testSHA,
 				}
-				json.NewEncoder(w).Encode(resp)
-			case r.URL.Path == "/download/aws.zip":
-				w.Write(testBinary)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/download/aws.zip":
+				_, _ = w.Write(testBinary)
 			default:
 				w.WriteHeader(404)
 			}
@@ -298,7 +298,8 @@ func TestMirrorProviderInstanceToDest(t *testing.T) {
 	t.Run("retry succeeds on second attempt", func(t *testing.T) {
 		callCount := 0
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64" {
+			switch r.URL.Path {
+			case "/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64":
 				callCount++
 				if callCount == 1 {
 					w.WriteHeader(500)
@@ -308,10 +309,10 @@ func TestMirrorProviderInstanceToDest(t *testing.T) {
 					DownloadURL: fmt.Sprintf("https://%s/download/aws.zip", r.Host),
 					Shasum:      testSHA,
 				}
-				json.NewEncoder(w).Encode(resp)
-			} else if r.URL.Path == "/download/aws.zip" {
-				w.Write(testBinary)
-			} else {
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/download/aws.zip":
+				_, _ = w.Write(testBinary)
+			default:
 				w.WriteHeader(404)
 			}
 		}))
